@@ -58,8 +58,12 @@ class PdfPageLabel(QLabel):
         self.setPixmap(QPixmap.fromImage(image))
         self.setFixedSize(image.size())
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self._copy_shortcut = QShortcut(QKeySequence.StandardKey.Copy, self)
-        self._copy_shortcut.activated.connect(self.copy_selection)
+        self._copy_shortcuts = []
+        for key in (QKeySequence.StandardKey.Copy, QKeySequence.StandardKey.Cut):
+            shortcut = QShortcut(key, self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+            shortcut.activated.connect(self.copy_selection)
+            self._copy_shortcuts.append(shortcut)
 
     def _get_textpage(self):
         if self._textpage is None:
@@ -236,10 +240,6 @@ class PdfReaderWindow(QMainWindow):
         self.print_button = QPushButton("In")
         self.print_button.clicked.connect(self.print_document)
         toolbar.addWidget(self.print_button)
-        self.copy_button = QPushButton("Sao chép")
-        self.copy_button.setToolTip("Chọn chữ trên trang rồi bấm để sao chép (Ctrl+C)")
-        self.copy_button.clicked.connect(self.copy_selected_text)
-        toolbar.addWidget(self.copy_button)
         toolbar.addSeparator()
 
         self.search_box = QLineEdit()
@@ -258,21 +258,33 @@ class PdfReaderWindow(QMainWindow):
         self.page_input.setMaximum(1)
         self.page_input.setFixedWidth(72)
         self.page_input.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.page_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_prev_button = QPushButton("−")
+        self.page_prev_button.setToolTip("Về trang trước (−1 trang)")
+        self.page_prev_button.setEnabled(False)
+        self.page_prev_button.clicked.connect(lambda: self.go_to_page(self.page_index - 1))
+        toolbar.addWidget(self.page_prev_button)
         self.page_input.valueChanged.connect(lambda value: self.go_to_page(value - 1))
         toolbar.addWidget(self.page_input)
+        self.page_next_button = QPushButton("+")
+        self.page_next_button.setToolTip("Đến trang tiếp theo (+1 trang)")
+        self.page_next_button.setEnabled(False)
+        self.page_next_button.clicked.connect(lambda: self.go_to_page(self.page_index + 1))
+        toolbar.addWidget(self.page_next_button)
         self.page_total = QLabel("/ 0")
         toolbar.addWidget(self.page_total)
         toolbar.addSeparator()
 
         zoom_out = QPushButton("−")
         zoom_out.setToolTip("Thu nhỏ")
-        zoom_out.clicked.connect(lambda: self.set_zoom(self.zoom / 1.15))
+        zoom_out.clicked.connect(lambda: self.change_zoom(-10))
         toolbar.addWidget(zoom_out)
         self.zoom_input = QSpinBox()
         self.zoom_input.setRange(MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT)
         self.zoom_input.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.zoom_input.setSuffix("%")
         self.zoom_input.setValue(100)
+        self.zoom_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.zoom_input.setKeyboardTracking(False)
         self.zoom_input.setToolTip("Nhập phần trăm thu phóng rồi nhấn Enter")
         self.zoom_input.setFixedWidth(82)
@@ -280,7 +292,7 @@ class PdfReaderWindow(QMainWindow):
         toolbar.addWidget(self.zoom_input)
         zoom_in = QPushButton("+")
         zoom_in.setToolTip("Phóng to")
-        zoom_in.clicked.connect(lambda: self.set_zoom(self.zoom * 1.15))
+        zoom_in.clicked.connect(lambda: self.change_zoom(10))
         toolbar.addWidget(zoom_in)
         fit_button = QPushButton("Vừa trang")
         fit_button.clicked.connect(self.fit_page)
@@ -308,8 +320,8 @@ class PdfReaderWindow(QMainWindow):
             ("Shift+F3", self.search_previous),
             ("Left", lambda: self.go_to_page(self.page_index - 1)),
             ("Right", lambda: self.go_to_page(self.page_index + 1)),
-            ("Ctrl+Plus", lambda: self.set_zoom(self.zoom * 1.15)),
-            ("Ctrl+Minus", lambda: self.set_zoom(self.zoom / 1.15)),
+            ("Ctrl+Plus", lambda: self.change_zoom(10)),
+            ("Ctrl+Minus", lambda: self.change_zoom(-10)),
         ]
         for shortcut, callback in shortcuts:
             action = QAction(self)
@@ -374,6 +386,8 @@ class PdfReaderWindow(QMainWindow):
         self.document = new_document
         self.file_path = path
         self.page_index = 0
+        self.page_prev_button.setEnabled(len(self.document) > 1)
+        self.page_next_button.setEnabled(len(self.document) > 1)
         self.page_text.clear()
         self.search_results.clear()
         self.search_position = -1
@@ -443,6 +457,7 @@ class PdfReaderWindow(QMainWindow):
         self.page_input.blockSignals(True)
         self.page_input.setValue(index + 1)
         self.page_input.blockSignals(False)
+        self._update_page_buttons()
 
     def go_to_page(self, index: int) -> None:
         if self.document is None:
@@ -451,7 +466,17 @@ class PdfReaderWindow(QMainWindow):
         self.page_input.blockSignals(True)
         self.page_input.setValue(self.page_index + 1)
         self.page_input.blockSignals(False)
+        self._update_page_buttons()
         self._scroll_to_page(self.page_index)
+
+    def _update_page_buttons(self) -> None:
+        has_document = self.document is not None
+        self.page_prev_button.setEnabled(has_document and self.page_index > 0)
+        self.page_next_button.setEnabled(has_document and self.page_index < len(self.document) - 1)
+
+    def change_zoom(self, delta_percent: int) -> None:
+        new_percent = max(MIN_ZOOM_PERCENT, min(MAX_ZOOM_PERCENT, self.zoom_input.value() + delta_percent))
+        self.set_zoom(RENDER_SCALE * new_percent / 100.0)
 
     def set_zoom(self, value: float) -> None:
         self.zoom = max(RENDER_SCALE * MIN_ZOOM_PERCENT / 100.0,
