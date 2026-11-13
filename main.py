@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pypdfium2 as pdfium
-from PySide6.QtCore import Qt, QSize, QTimer
+from PySide6.QtCore import Qt, QSize, QTimer, QSettings
 from PySide6.QtGui import QAction, QColor, QIcon, QImage, QIntValidator, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
@@ -13,6 +14,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QLineEdit,
     QMainWindow,
     QMessageBox,
@@ -219,6 +222,8 @@ class PdfReaderWindow(QMainWindow):
         self.open_tabs: dict[str, dict] = {}
         self.active_tab_key: str | None = None
         self._tab_change_blocked = False
+        self.settings = QSettings("TRIHX", "HX PDF")
+        self.recent_files: list[dict[str, str | float]] = self._load_recent_files()
         self._build_ui()
         self._build_actions()
         self._set_empty_state()
@@ -240,9 +245,13 @@ class PdfReaderWindow(QMainWindow):
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
-        open_button = QPushButton("Mở PDF")
+        open_button = QPushButton("Open")
         open_button.clicked.connect(self.open_dialog)
         toolbar.addWidget(open_button)
+        self.recent_button = QPushButton("Recent")
+        self.recent_button.setCheckable(True)
+        self.recent_button.toggled.connect(self._toggle_recent_panel)
+        toolbar.addWidget(self.recent_button)
         self.print_button = QPushButton("In")
         self.print_button.clicked.connect(self.print_document)
         toolbar.addWidget(self.print_button)
@@ -322,6 +331,12 @@ class PdfReaderWindow(QMainWindow):
         self.add_tab_button.setText("+")
         self.add_tab_button.setToolTip("Mở thêm PDF trong tab mới")
         self.add_tab_button.clicked.connect(self.open_dialog)
+        document_tabs_toolbar = QToolBar("Các tài liệu đang mở")
+        document_tabs_toolbar.setMovable(False)
+        document_tabs_toolbar.setFloatable(False)
+        document_tabs_toolbar.addWidget(self.tab_bar)
+        document_tabs_toolbar.addWidget(self.add_tab_button)
+        self.insertToolBar(toolbar, document_tabs_toolbar)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -333,19 +348,136 @@ class PdfReaderWindow(QMainWindow):
         self.pages_layout.setSpacing(18)
         self.scroll.setWidget(self.pages_widget)
         self.scroll.verticalScrollBar().valueChanged.connect(self._sync_page_from_scroll)
+
+        self.recent_panel = QWidget()
+        self.recent_panel.setFixedWidth(330)
+        self.recent_panel.setStyleSheet("background: #ffffff; border-right: 1px solid #dce3ec;")
+        recent_layout = QVBoxLayout(self.recent_panel)
+        recent_layout.setContentsMargins(10, 8, 8, 8)
+        recent_layout.setSpacing(6)
+        recent_header = QHBoxLayout()
+        recent_title = QLabel("Recent")
+        recent_title.setStyleSheet("font-size: 16px; font-weight: 600; color: #26354a; border: none;")
+        recent_header.addWidget(recent_title)
+        recent_header.addStretch(1)
+        refresh_recent = QToolButton()
+        refresh_recent.setText("⟳")
+        refresh_recent.setToolTip("Làm mới danh sách gần đây")
+        refresh_recent.clicked.connect(self._refresh_recent_list)
+        recent_header.addWidget(refresh_recent)
+        recent_layout.addLayout(recent_header)
+        self.recent_list = QListWidget()
+        self.recent_list.setStyleSheet("QListWidget { border: 0; } QListWidget::item { border-bottom: 1px solid #edf0f4; }")
+        self.recent_list.itemClicked.connect(self._open_recent_item)
+        recent_layout.addWidget(self.recent_list, 1)
+        self.recent_panel.hide()
+        self._refresh_recent_list()
+
+        content_row = QHBoxLayout()
+        content_row.setContentsMargins(0, 0, 0, 0)
+        content_row.setSpacing(0)
+        content_row.addWidget(self.recent_panel)
+        content_row.addWidget(self.scroll, 1)
         central = QWidget()
         central_layout = QVBoxLayout(central)
-        central_layout.setContentsMargins(4, 2, 4, 0)
+        central_layout.setContentsMargins(4, 0, 4, 0)
         central_layout.setSpacing(0)
-        tab_header = QHBoxLayout()
-        tab_header.setContentsMargins(0, 0, 0, 0)
-        tab_header.setSpacing(4)
-        tab_header.addWidget(self.tab_bar, 1)
-        tab_header.addWidget(self.add_tab_button, 0, Qt.AlignmentFlag.AlignTop)
-        central_layout.addLayout(tab_header)
-        central_layout.addWidget(self.scroll, 1)
+        central_layout.addLayout(content_row, 1)
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
+
+    def _load_recent_files(self) -> list[dict[str, str | float]]:
+        entries = self.settings.value("recentFiles", []) or []
+        recent: list[dict[str, str | float]] = []
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("path"):
+                try:
+                    recent.append({"path": str(entry["path"]), "opened": float(entry.get("opened", 0))})
+                except (TypeError, ValueError):
+                    continue
+            elif isinstance(entry, str):
+                recent.append({"path": entry, "opened": 0.0})
+        return recent[:30]
+
+    def _record_recent_file(self, path: Path) -> None:
+        path_string = str(path.resolve())
+        self.recent_files = [entry for entry in self.recent_files if str(entry.get("path", "")).casefold() != path_string.casefold()]
+        self.recent_files.insert(0, {"path": path_string, "opened": datetime.now().timestamp()})
+        self.recent_files = self.recent_files[:30]
+        self.settings.setValue("recentFiles", self.recent_files)
+        self.settings.sync()
+        self._refresh_recent_list()
+
+    def _refresh_recent_list(self) -> None:
+        if not hasattr(self, "recent_list"):
+            return
+        self.recent_list.clear()
+        icon = QIcon(str(resource_path("app_icon.png")))
+        for entry in self.recent_files:
+            path = Path(str(entry.get("path", "")))
+            if not str(path):
+                continue
+            opened = float(entry.get("opened", 0) or 0)
+            if opened:
+                opened_at = datetime.fromtimestamp(opened)
+                time_label = ("Today " if opened_at.date() == datetime.now().date() else opened_at.strftime("%d-%m ")) + opened_at.strftime("%H:%M")
+            else:
+                time_label = ""
+
+            item = QListWidgetItem()
+            item.setData(Qt.ItemDataRole.UserRole, str(path))
+            item.setToolTip(str(path))
+            item.setSizeHint(QSize(300, 58))
+            self.recent_list.addItem(item)
+
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(6, 4, 6, 4)
+            row_layout.setSpacing(8)
+            icon_label = QLabel()
+            icon_label.setPixmap(icon.pixmap(28, 28))
+            icon_label.setFixedSize(30, 34)
+            row_layout.addWidget(icon_label)
+            details = QVBoxLayout()
+            details.setContentsMargins(0, 0, 0, 0)
+            details.setSpacing(2)
+            title_line = QHBoxLayout()
+            title_line.setContentsMargins(0, 0, 0, 0)
+            name_label = QLabel(path.name)
+            name_label.setStyleSheet("color: #34445a; font-size: 12px; border: none;")
+            name_label.setToolTip(str(path))
+            title_line.addWidget(name_label, 1)
+            time_text = QLabel(time_label)
+            time_text.setStyleSheet("color: #8190a3; font-size: 10px; border: none;")
+            title_line.addWidget(time_text)
+            details.addLayout(title_line)
+            folder_label = QLabel(str(path.parent))
+            folder_label.setStyleSheet("color: #8190a3; font-size: 10px; border: none;")
+            folder_label.setToolTip(str(path.parent))
+            details.addWidget(folder_label)
+            row_layout.addLayout(details, 1)
+            self.recent_list.setItemWidget(item, row)
+
+        if not self.recent_files:
+            empty = QListWidgetItem("Chưa có tệp PDF gần đây")
+            empty.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.recent_list.addItem(empty)
+
+    def _toggle_recent_panel(self, visible: bool) -> None:
+        self.recent_panel.setVisible(visible)
+        if visible:
+            self._refresh_recent_list()
+
+    def _open_recent_item(self, item: QListWidgetItem) -> None:
+        path = item.data(Qt.ItemDataRole.UserRole)
+        if not path:
+            return
+        candidate = Path(str(path))
+        if not candidate.is_file():
+            QMessageBox.warning(self, "Không tìm thấy tệp", f"Tệp PDF này không còn ở vị trí đã lưu:\n{candidate}")
+            return
+        self.open_file(candidate)
+        self.recent_button.setChecked(False)
 
     def _build_actions(self) -> None:
         shortcuts = [
@@ -397,6 +529,7 @@ class PdfReaderWindow(QMainWindow):
         path = path.expanduser().resolve()
         tab_key = str(path).casefold()
         if tab_key in self.open_tabs:
+            self._record_recent_file(path)
             for index in range(self.tab_bar.count()):
                 if self.tab_bar.tabData(index) == tab_key:
                     self.tab_bar.setCurrentIndex(index)
@@ -427,6 +560,7 @@ class PdfReaderWindow(QMainWindow):
                 QMessageBox.critical(self, "Không mở được PDF", f"Mật khẩu không đúng hoặc tệp bị lỗi.\n\nChi tiết: {password_exc}")
                 return
 
+        self._record_recent_file(path)
         self._save_active_tab_state()
         self.open_tabs[tab_key] = {
             "path": path,
