@@ -19,7 +19,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QStatusBar,
+    QTabBar,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -214,6 +216,9 @@ class PdfReaderWindow(QMainWindow):
         self.last_search_query = ""
         self.page_labels: list[QLabel] = []
         self.active_page_label: PdfPageLabel | None = None
+        self.open_tabs: dict[str, dict] = {}
+        self.active_tab_key: str | None = None
+        self._tab_change_blocked = False
         self._build_ui()
         self._build_actions()
         self._set_empty_state()
@@ -225,6 +230,9 @@ class PdfReaderWindow(QMainWindow):
             QToolButton, QPushButton { color: #26354a; background: #ffffff; border: 1px solid #d7e0eb; border-radius: 8px; padding: 7px 12px; }
             QToolButton:hover, QPushButton:hover { background: #f0f6ff; border-color: #9bbce8; }
             QLineEdit { color: #26354a; background: white; border: 1px solid #d7e0eb; border-radius: 7px; padding: 5px 4px; }
+            QTabBar::tab { background: #e8edf4; color: #34445a; padding: 7px 14px; margin-right: 3px; border: 1px solid #d8e0eb; border-bottom: none; border-top-left-radius: 7px; border-top-right-radius: 7px; }
+            QTabBar::tab:selected { background: #ffffff; color: #1c2d45; }
+            QTabBar::tab:hover { background: #f7f9fc; }
             QStatusBar { background: #ffffff; border-top: 1px solid #dce3ec; color: #536276; }
         """)
 
@@ -302,6 +310,19 @@ class PdfReaderWindow(QMainWindow):
         fit_button.clicked.connect(self.fit_page)
         toolbar.addWidget(fit_button)
 
+        self.tab_bar = QTabBar()
+        self.tab_bar.setTabsClosable(True)
+        self.tab_bar.setMovable(True)
+        self.tab_bar.setExpanding(False)
+        self.tab_bar.setUsesScrollButtons(True)
+        self.tab_bar.setElideMode(Qt.TextElideMode.ElideMiddle)
+        self.tab_bar.currentChanged.connect(self._on_tab_changed)
+        self.tab_bar.tabCloseRequested.connect(self.close_tab)
+        self.add_tab_button = QToolButton()
+        self.add_tab_button.setText("+")
+        self.add_tab_button.setToolTip("Mở thêm PDF trong tab mới")
+        self.add_tab_button.clicked.connect(self.open_dialog)
+
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
@@ -312,7 +333,18 @@ class PdfReaderWindow(QMainWindow):
         self.pages_layout.setSpacing(18)
         self.scroll.setWidget(self.pages_widget)
         self.scroll.verticalScrollBar().valueChanged.connect(self._sync_page_from_scroll)
-        self.setCentralWidget(self.scroll)
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(4, 2, 4, 0)
+        central_layout.setSpacing(0)
+        tab_header = QHBoxLayout()
+        tab_header.setContentsMargins(0, 0, 0, 0)
+        tab_header.setSpacing(4)
+        tab_header.addWidget(self.tab_bar, 1)
+        tab_header.addWidget(self.add_tab_button, 0, Qt.AlignmentFlag.AlignTop)
+        central_layout.addLayout(tab_header)
+        central_layout.addWidget(self.scroll, 1)
+        self.setCentralWidget(central)
         self.setStatusBar(QStatusBar())
 
     def _build_actions(self) -> None:
@@ -320,6 +352,9 @@ class PdfReaderWindow(QMainWindow):
             ("Ctrl+O", self.open_dialog),
             ("Ctrl+P", self.print_document),
             ("Ctrl+F", lambda: self.search_box.setFocus()),
+            ("Ctrl+W", self.close_current_tab),
+            ("Ctrl+Tab", lambda: self.select_tab_step(1)),
+            ("Ctrl+Shift+Tab", lambda: self.select_tab_step(-1)),
             ("F3", self.search_next),
             ("Shift+F3", self.search_previous),
             ("Left", lambda: self.go_to_page(self.page_index - 1)),
@@ -348,18 +383,26 @@ class PdfReaderWindow(QMainWindow):
             event.acceptProposedAction()
 
     def dropEvent(self, event) -> None:
-        urls = event.mimeData().urls()
-        if urls:
-            candidate = Path(urls[0].toLocalFile())
+        for url in event.mimeData().urls():
+            candidate = Path(url.toLocalFile())
             if candidate.suffix.lower() == ".pdf":
                 self.open_file(candidate)
 
     def open_dialog(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Mở tài liệu PDF", "", "Tài liệu PDF (*.pdf)")
-        if path:
+        paths, _ = QFileDialog.getOpenFileNames(self, "Mở tài liệu PDF", "", "Tài liệu PDF (*.pdf)")
+        for path in paths:
             self.open_file(Path(path))
 
     def open_file(self, path: Path) -> None:
+        path = path.expanduser().resolve()
+        tab_key = str(path).casefold()
+        if tab_key in self.open_tabs:
+            for index in range(self.tab_bar.count()):
+                if self.tab_bar.tabData(index) == tab_key:
+                    self.tab_bar.setCurrentIndex(index)
+                    break
+            return
+
         try:
             new_document = pdfium.PdfDocument(str(path))
             new_document.init_forms()
@@ -384,27 +427,135 @@ class PdfReaderWindow(QMainWindow):
                 QMessageBox.critical(self, "Không mở được PDF", f"Mật khẩu không đúng hoặc tệp bị lỗi.\n\nChi tiết: {password_exc}")
                 return
 
+        self._save_active_tab_state()
+        self.open_tabs[tab_key] = {
+            "path": path,
+            "document": new_document,
+            "page_index": 0,
+            "zoom": RENDER_SCALE,
+            "page_text": {},
+            "search_results": [],
+            "search_position": -1,
+            "last_search_query": "",
+            "search_text": "",
+        }
+        self._tab_change_blocked = True
+        index = self.tab_bar.addTab(path.name)
+        self.tab_bar.setTabData(index, tab_key)
+        self.tab_bar.setTabToolTip(index, str(path))
+        self.tab_bar.setCurrentIndex(index)
+        self._tab_change_blocked = False
+        self._activate_tab(tab_key, save_previous=False)
+
+    def _save_active_tab_state(self) -> None:
+        if self.active_tab_key is None or self.active_tab_key not in self.open_tabs or self.document is None:
+            return
+        state = self.open_tabs[self.active_tab_key]
+        state["page_index"] = self.page_index
+        state["zoom"] = self.zoom
+        state["page_text"] = self.page_text
+        state["search_results"] = self.search_results
+        state["search_position"] = self.search_position
+        state["last_search_query"] = self.last_search_query
+        state["search_text"] = self.search_box.text()
+
+    def _on_tab_changed(self, index: int) -> None:
+        if self._tab_change_blocked:
+            return
+        if index < 0:
+            self._show_no_documents()
+            return
+        tab_key = self.tab_bar.tabData(index)
+        if tab_key:
+            self._activate_tab(str(tab_key))
+
+    def _activate_tab(self, tab_key: str, save_previous: bool = True) -> None:
+        if tab_key not in self.open_tabs:
+            return
+        if save_previous:
+            self._save_active_tab_state()
+        if self.active_tab_key != tab_key:
+            self._clear_page_widgets()
+        state = self.open_tabs[tab_key]
+        self.active_tab_key = tab_key
+        self.file_path = state["path"]
+        self.document = state["document"]
+        self.page_index = state["page_index"]
+        self.zoom = state["zoom"]
+        self.page_text = state["page_text"]
+        self.search_results = state["search_results"]
+        self.search_position = state["search_position"]
+        self.last_search_query = state["last_search_query"]
+        self.search_box.blockSignals(True)
+        self.search_box.setText(state["search_text"])
+        self.search_box.blockSignals(False)
+        self.page_input.setText(str(self.page_index + 1))
+        self.page_total.setText(f"/ {len(self.document)}")
+        self.zoom_input.setText(str(round(self.zoom / RENDER_SCALE * 100)))
+        if 0 <= self.search_position < len(self.search_results):
+            self.search_count_label.setText(f"{self.search_position + 1}/{len(self.search_results)}")
+        else:
+            self.search_count_label.setText("0/0")
+        self.page_prev_button.setEnabled(len(self.document) > 1 and self.page_index > 0)
+        self.page_next_button.setEnabled(self.page_index < len(self.document) - 1)
+        self.print_button.setEnabled(True)
+        self.setWindowTitle(f"{self.file_path.name} — {APP_NAME}")
+        self.render_page()
+        self.statusBar().showMessage(f"{self.file_path.name}  •  {len(self.document)} trang  •  Tệp không rời khỏi máy tính")
+
+    def close_tab(self, index: int) -> None:
+        tab_key = self.tab_bar.tabData(index)
+        if not tab_key:
+            return
+        tab_key = str(tab_key)
+        is_active = tab_key == self.active_tab_key
+        if is_active:
+            self._save_active_tab_state()
+            self._clear_page_widgets()
+            self.active_tab_key = None
+        state = self.open_tabs.pop(tab_key, None)
+        if state:
+            state["document"].close()
+        self._tab_change_blocked = True
+        self.tab_bar.removeTab(index)
+        next_index = self.tab_bar.currentIndex()
+        self._tab_change_blocked = False
+        if self.tab_bar.count() == 0:
+            self._show_no_documents()
+        elif is_active:
+            self._activate_tab(str(self.tab_bar.tabData(next_index)), save_previous=False)
+
+    def close_current_tab(self) -> None:
+        if self.tab_bar.currentIndex() >= 0:
+            self.close_tab(self.tab_bar.currentIndex())
+
+    def select_tab_step(self, step: int) -> None:
+        count = self.tab_bar.count()
+        if count > 1:
+            self.tab_bar.setCurrentIndex((self.tab_bar.currentIndex() + step) % count)
+
+    def _show_no_documents(self) -> None:
         if self.document is not None:
             self._clear_page_widgets()
-            self.document.close()
-        self.document = new_document
-        self.file_path = path
+        self.active_tab_key = None
+        self.document = None
+        self.file_path = None
         self.page_index = 0
-        self.page_prev_button.setEnabled(len(self.document) > 1)
-        self.page_next_button.setEnabled(len(self.document) > 1)
-        self.page_text.clear()
-        self.search_results.clear()
+        self.page_text = {}
+        self.search_results = []
         self.search_position = -1
         self.last_search_query = ""
-        self.search_box.clear()
         self.page_input.setText("1")
-        self.page_total.setText(f"/ {len(self.document)}")
+        self.page_total.setText("/ 0")
+        self.zoom_input.setText("100")
+        self.search_box.clear()
         self.search_count_label.setText("0/0")
-        self.setWindowTitle(f"{path.name} — {APP_NAME}")
-        self.print_button.setEnabled(True)
-        self.zoom = RENDER_SCALE
-        self.render_page()
-        self.statusBar().showMessage(f"{path.name}  •  {len(self.document)} trang  •  Tệp không rời khỏi máy tính")
+        self.page_prev_button.setEnabled(False)
+        self.page_next_button.setEnabled(False)
+        self.print_button.setEnabled(False)
+        self.setWindowTitle(f"{APP_NAME} — Đọc và in tài liệu PDF")
+        if not self.pages_layout.count():
+            self._set_empty_state()
 
     def render_page(self) -> None:
         if self.document is None:
@@ -648,6 +799,16 @@ class PdfReaderWindow(QMainWindow):
             painter.end()
         self.statusBar().showMessage("Tài liệu đã được gửi tới máy in.")
 
+    def closeEvent(self, event) -> None:
+        self._clear_page_widgets()
+        for state in self.open_tabs.values():
+            try:
+                state["document"].close()
+            except Exception:
+                pass
+        self.open_tabs.clear()
+        event.accept()
+
 
 def register_pdf_open_with() -> None:
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
@@ -692,11 +853,13 @@ def main() -> int:
     app.setWindowIcon(QIcon(str(resource_path("app_icon.png"))))
     window = PdfReaderWindow()
     window.show()
-    for argument in input_files:
-        candidate = Path(argument.strip('"'))
-        if candidate.suffix.lower() == ".pdf" and candidate.is_file():
-            QTimer.singleShot(0, lambda path=candidate: window.open_file(path))
-            break
+    candidates = [
+        Path(argument.strip('"'))
+        for argument in input_files
+        if Path(argument.strip('"')).suffix.lower() == ".pdf" and Path(argument.strip('"')).is_file()
+    ]
+    if candidates:
+        QTimer.singleShot(0, lambda paths=candidates: [window.open_file(path) for path in paths])
     return app.exec()
 
 
