@@ -207,7 +207,7 @@ class PdfPageLabel(QLabel):
 class PdfReaderWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle(f"{APP_NAME} — Đọc và in tài liệu PDF")
+        self.setWindowTitle(APP_NAME)
         self.setWindowIcon(QIcon(str(resource_path("app_icon.png"))))
         self.resize(1180, 820)
         self.setMinimumSize(760, 560)
@@ -329,6 +329,12 @@ class PdfReaderWindow(QMainWindow):
         self.tab_bar.setIconSize(QSize(16, 16))
         self.tab_bar.currentChanged.connect(self._on_tab_changed)
         self.tab_bar.tabCloseRequested.connect(self.close_tab)
+        self.app_home_button = QToolButton()
+        self.app_home_button.setText("HX PDF")
+        self.app_home_button.setIcon(QIcon(str(resource_path("app_icon.png"))))
+        self.app_home_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.app_home_button.setToolTip("HX PDF — xem các tệp gần đây")
+        self.app_home_button.clicked.connect(self._show_recent_popup)
         self.add_tab_button = QToolButton()
         self.add_tab_button.setText("+")
         self.add_tab_button.setToolTip("Mở thêm PDF trong tab mới")
@@ -336,6 +342,7 @@ class PdfReaderWindow(QMainWindow):
         self.document_tabs_toolbar = QToolBar("Các tài liệu đang mở")
         self.document_tabs_toolbar.setMovable(False)
         self.document_tabs_toolbar.setFloatable(False)
+        self.document_tabs_toolbar.addWidget(self.app_home_button)
         self.document_tabs_toolbar.addWidget(self.tab_bar)
         self.document_tabs_toolbar.addWidget(self.add_tab_button)
         self.insertToolBar(toolbar, self.document_tabs_toolbar)
@@ -642,7 +649,7 @@ class PdfReaderWindow(QMainWindow):
         self.page_prev_button.setEnabled(len(self.document) > 1 and self.page_index > 0)
         self.page_next_button.setEnabled(self.page_index < len(self.document) - 1)
         self.print_button.setEnabled(True)
-        self.setWindowTitle(f"{self.file_path.name} — {APP_NAME}")
+        self.setWindowTitle(APP_NAME)
         self.render_page()
         self.statusBar().showMessage(f"{self.file_path.name}  •  {len(self.document)} trang  •  Tệp không rời khỏi máy tính")
 
@@ -696,7 +703,7 @@ class PdfReaderWindow(QMainWindow):
         self.page_prev_button.setEnabled(False)
         self.page_next_button.setEnabled(False)
         self.print_button.setEnabled(False)
-        self.setWindowTitle(f"{APP_NAME} — Đọc và in tài liệu PDF")
+        self.setWindowTitle(APP_NAME)
         if not self.pages_layout.count():
             self._set_empty_state()
 
