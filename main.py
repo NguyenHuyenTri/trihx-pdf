@@ -5,11 +5,10 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QAction, QColor, QIcon, QImage, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtGui import QAction, QColor, QIcon, QImage, QIntValidator, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QApplication,
-    QAbstractSpinBox,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -19,7 +18,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QStatusBar,
     QToolBar,
     QVBoxLayout,
@@ -226,7 +224,7 @@ class PdfReaderWindow(QMainWindow):
             QToolBar { background: #ffffff; border: 0; border-bottom: 1px solid #dce3ec; spacing: 6px; padding: 8px; }
             QToolButton, QPushButton { color: #26354a; background: #ffffff; border: 1px solid #d7e0eb; border-radius: 8px; padding: 7px 12px; }
             QToolButton:hover, QPushButton:hover { background: #f0f6ff; border-color: #9bbce8; }
-            QLineEdit, QSpinBox { background: white; border: 1px solid #d7e0eb; border-radius: 7px; padding: 6px 8px; }
+            QLineEdit { color: #26354a; background: white; border: 1px solid #d7e0eb; border-radius: 7px; padding: 5px 4px; }
             QStatusBar { background: #ffffff; border-top: 1px solid #dce3ec; color: #536276; }
         """)
 
@@ -251,22 +249,28 @@ class PdfReaderWindow(QMainWindow):
         self.search_previous_shortcut = QShortcut(QKeySequence("Shift+Return"), self.search_box)
         self.search_previous_shortcut.activated.connect(self.search_previous)
         toolbar.addWidget(self.search_box)
+        self.search_count_label = QLabel("0/0")
+        self.search_count_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.search_count_label.setFixedWidth(48)
+        self.search_count_label.setToolTip("Enter/F3: kết quả tiếp theo • Shift+Enter/Shift+F3: kết quả trước")
+        toolbar.addWidget(self.search_count_label)
         toolbar.addSeparator()
 
-        self.page_input = QSpinBox()
-        self.page_input.setMinimum(1)
-        self.page_input.setMaximum(1)
-        self.page_input.setFixedWidth(72)
-        self.page_input.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.page_input = QLineEdit("1")
+        self.page_input.setValidator(QIntValidator(1, 999999, self.page_input))
+        self.page_input.setToolTip("Nhập số trang rồi nhấn Enter")
+        self.page_input.editingFinished.connect(self._page_input_changed)
+        self.page_input.setFixedWidth(44)
         self.page_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.page_prev_button = QPushButton("−")
+        self.page_prev_button.setFixedWidth(30)
         self.page_prev_button.setToolTip("Về trang trước (−1 trang)")
         self.page_prev_button.setEnabled(False)
         self.page_prev_button.clicked.connect(lambda: self.go_to_page(self.page_index - 1))
         toolbar.addWidget(self.page_prev_button)
-        self.page_input.valueChanged.connect(lambda value: self.go_to_page(value - 1))
         toolbar.addWidget(self.page_input)
         self.page_next_button = QPushButton("+")
+        self.page_next_button.setFixedWidth(30)
         self.page_next_button.setToolTip("Đến trang tiếp theo (+1 trang)")
         self.page_next_button.setEnabled(False)
         self.page_next_button.clicked.connect(lambda: self.go_to_page(self.page_index + 1))
@@ -276,21 +280,21 @@ class PdfReaderWindow(QMainWindow):
         toolbar.addSeparator()
 
         zoom_out = QPushButton("−")
+        zoom_out.setFixedWidth(30)
         zoom_out.setToolTip("Thu nhỏ")
         zoom_out.clicked.connect(lambda: self.change_zoom(-10))
         toolbar.addWidget(zoom_out)
-        self.zoom_input = QSpinBox()
-        self.zoom_input.setRange(MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT)
-        self.zoom_input.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        self.zoom_input.setSuffix("%")
-        self.zoom_input.setValue(100)
+        self.zoom_input = QLineEdit("100")
+        self.zoom_input.setValidator(QIntValidator(MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT, self.zoom_input))
+        self.zoom_input.editingFinished.connect(self._zoom_input_changed)
         self.zoom_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.zoom_input.setKeyboardTracking(False)
         self.zoom_input.setToolTip("Nhập phần trăm thu phóng rồi nhấn Enter")
-        self.zoom_input.setFixedWidth(82)
-        self.zoom_input.valueChanged.connect(lambda percent: self.set_zoom(RENDER_SCALE * percent / 100.0))
+        self.zoom_input.setFixedWidth(46)
         toolbar.addWidget(self.zoom_input)
+        self.zoom_suffix = QLabel("%")
+        toolbar.addWidget(self.zoom_suffix)
         zoom_in = QPushButton("+")
+        zoom_in.setFixedWidth(30)
         zoom_in.setToolTip("Phóng to")
         zoom_in.clicked.connect(lambda: self.change_zoom(10))
         toolbar.addWidget(zoom_in)
@@ -392,11 +396,10 @@ class PdfReaderWindow(QMainWindow):
         self.search_results.clear()
         self.search_position = -1
         self.last_search_query = ""
-        self.page_input.blockSignals(True)
-        self.page_input.setMaximum(len(self.document))
-        self.page_input.setValue(1)
-        self.page_input.blockSignals(False)
+        self.search_box.clear()
+        self.page_input.setText("1")
         self.page_total.setText(f"/ {len(self.document)}")
+        self.search_count_label.setText("0/0")
         self.setWindowTitle(f"{path.name} — {APP_NAME}")
         self.print_button.setEnabled(True)
         self.zoom = RENDER_SCALE
@@ -416,12 +419,8 @@ class PdfReaderWindow(QMainWindow):
             label = PdfPageLabel(page, image, self.zoom, self._set_active_page_label)
             self.pages_layout.addWidget(label, alignment=Qt.AlignmentFlag.AlignHCenter)
             self.page_labels.append(label)
-        self.page_input.blockSignals(True)
-        self.page_input.setValue(self.page_index + 1)
-        self.page_input.blockSignals(False)
-        self.zoom_input.blockSignals(True)
-        self.zoom_input.setValue(round(self.zoom / RENDER_SCALE * 100))
-        self.zoom_input.blockSignals(False)
+        self.page_input.setText(str(self.page_index + 1))
+        self.zoom_input.setText(str(round(self.zoom / RENDER_SCALE * 100)))
         self._apply_search_markers()
         QTimer.singleShot(0, lambda: self._scroll_to_page(self.page_index))
 
@@ -454,18 +453,14 @@ class PdfReaderWindow(QMainWindow):
             key=lambda i: abs(self.page_labels[i].geometry().center().y() - center),
         )
         self.page_index = index
-        self.page_input.blockSignals(True)
-        self.page_input.setValue(index + 1)
-        self.page_input.blockSignals(False)
+        self.page_input.setText(str(index + 1))
         self._update_page_buttons()
 
     def go_to_page(self, index: int) -> None:
         if self.document is None:
             return
         self.page_index = max(0, min(index, len(self.document) - 1))
-        self.page_input.blockSignals(True)
-        self.page_input.setValue(self.page_index + 1)
-        self.page_input.blockSignals(False)
+        self.page_input.setText(str(self.page_index + 1))
         self._update_page_buttons()
         self._scroll_to_page(self.page_index)
 
@@ -474,9 +469,31 @@ class PdfReaderWindow(QMainWindow):
         self.page_prev_button.setEnabled(has_document and self.page_index > 0)
         self.page_next_button.setEnabled(has_document and self.page_index < len(self.document) - 1)
 
+    def _page_input_changed(self) -> None:
+        if self.document is None:
+            self.page_input.setText("1")
+            return
+        try:
+            page_number = int(self.page_input.text())
+        except ValueError:
+            page_number = self.page_index + 1
+        self.go_to_page(page_number - 1)
+
     def change_zoom(self, delta_percent: int) -> None:
-        new_percent = max(MIN_ZOOM_PERCENT, min(MAX_ZOOM_PERCENT, self.zoom_input.value() + delta_percent))
+        try:
+            current_percent = int(self.zoom_input.text())
+        except ValueError:
+            current_percent = round(self.zoom / RENDER_SCALE * 100)
+        new_percent = max(MIN_ZOOM_PERCENT, min(MAX_ZOOM_PERCENT, current_percent + delta_percent))
         self.set_zoom(RENDER_SCALE * new_percent / 100.0)
+
+    def _zoom_input_changed(self) -> None:
+        try:
+            percent = int(self.zoom_input.text())
+        except ValueError:
+            percent = round(self.zoom / RENDER_SCALE * 100)
+        percent = max(MIN_ZOOM_PERCENT, min(MAX_ZOOM_PERCENT, percent))
+        self.set_zoom(RENDER_SCALE * percent / 100.0)
 
     def set_zoom(self, value: float) -> None:
         self.zoom = max(RENDER_SCALE * MIN_ZOOM_PERCENT / 100.0,
@@ -528,6 +545,7 @@ class PdfReaderWindow(QMainWindow):
         self.search_results.clear()
         self.search_position = -1
         self.last_search_query = ""
+        self.search_count_label.setText("0/0")
         self._apply_search_markers()
 
     def _find_all(self) -> None:
@@ -539,6 +557,7 @@ class PdfReaderWindow(QMainWindow):
         self.last_search_query = query
         if not query:
             self._apply_search_markers()
+            self.search_count_label.setText("0/0")
             self.statusBar().showMessage("Nhập từ khóa để tìm trong tài liệu.")
             return
         for page_index in range(len(self.document)):
@@ -556,7 +575,8 @@ class PdfReaderWindow(QMainWindow):
                 textpage.close()
         self._apply_search_markers()
         if not self.search_results:
-            self.statusBar().showMessage("Không tìm thấy nội dung phù hợp.")
+            self.search_count_label.setText("0/0")
+            self.statusBar().showMessage("Không có kết quả. Enter/F3: tiếp • Shift+Enter/Shift+F3: trước")
             return
         self.search_position = 0
         self._show_search_result()
@@ -565,9 +585,13 @@ class PdfReaderWindow(QMainWindow):
         if not self.search_results:
             return
         page_index, _, _ = self.search_results[self.search_position]
+        self.search_count_label.setText(f"{self.search_position + 1}/{len(self.search_results)}")
         self._apply_search_markers()
         self.go_to_page(page_index)
-        self.statusBar().showMessage(f"Kết quả {self.search_position + 1}/{len(self.search_results)} — trang {page_index + 1}")
+        self.statusBar().showMessage(
+            f"Kết quả {self.search_position + 1}/{len(self.search_results)} — trang {page_index + 1}"
+            " • Enter/F3: tiếp • Shift+Enter/Shift+F3: trước"
+        )
 
     def search_next(self) -> None:
         query = self.search_box.text().strip().casefold()
