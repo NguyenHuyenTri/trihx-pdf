@@ -1,4 +1,4 @@
-# HX PDF
+# TRIHX PDF (TRÍ HOÀ XUÂN PDF READER)
 
 Ứng dụng đọc PDF trên Windows. Tài liệu được xử lý trực tiếp trên máy tính.
 
