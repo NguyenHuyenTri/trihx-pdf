@@ -5,10 +5,11 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QAction, QColor, QIcon, QImage, QKeySequence, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QIcon, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QApplication,
+    QAbstractSpinBox,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -30,6 +31,7 @@ APP_NAME = "HX PDF"
 RENDER_SCALE = 1.35
 MIN_ZOOM_PERCENT = 25
 MAX_ZOOM_PERCENT = 400
+HIGHLIGHT_COLOR = QColor(55, 135, 245, 115)
 
 
 def resource_path(name: str) -> Path:
@@ -56,6 +58,8 @@ class PdfPageLabel(QLabel):
         self.setPixmap(QPixmap.fromImage(image))
         self.setFixedSize(image.size())
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._copy_shortcut = QShortcut(QKeySequence.StandardKey.Copy, self)
+        self._copy_shortcut.activated.connect(self.copy_selection)
 
     def _get_textpage(self):
         if self._textpage is None:
@@ -123,12 +127,11 @@ class PdfPageLabel(QLabel):
             return
         painter = QPainter(self)
         for span in self.search_matches:
-            color = QColor(255, 160, 0, 150) if span == self.active_search_match else QColor(255, 230, 0, 105)
-            self._paint_span(painter, textpage, span, color)
+            self._paint_span(painter, textpage, span, HIGHLIGHT_COLOR)
         if self.selection_start is not None and self.selection_end is not None:
             start = min(self.selection_start, self.selection_end)
             count = abs(self.selection_end - self.selection_start) + 1
-            self._paint_span(painter, textpage, (start, count), QColor(55, 135, 245, 115))
+            self._paint_span(painter, textpage, (start, count), HIGHLIGHT_COLOR)
         painter.end()
 
     def set_search_matches(self, matches: list[tuple[int, int]], active: tuple[int, int] | None) -> None:
@@ -157,6 +160,11 @@ class PdfPageLabel(QLabel):
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            if self._dragging:
+                index = self._char_at(event.position())
+                if index is not None:
+                    self.selection_end = index
+                    self.update()
             self._dragging = False
         super().mouseReleaseEvent(event)
 
@@ -173,7 +181,7 @@ class PdfPageLabel(QLabel):
         start = min(self.selection_start, self.selection_end)
         count = abs(self.selection_end - self.selection_start) + 1
         try:
-            return self._get_textpage().get_text_range(index=start, count=count)
+            return self._get_textpage().get_text_range(start, count).strip("\x00")
         except Exception:
             return ""
 
@@ -235,21 +243,18 @@ class PdfReaderWindow(QMainWindow):
         self.search_box.setPlaceholderText("Tìm trong tài liệu")
         self.search_box.setFixedWidth(220)
         self.search_box.returnPressed.connect(self.search_next)
+        self.search_box.textChanged.connect(self._on_search_text_changed)
+        self.search_box.setToolTip("Enter: kết quả tiếp theo • Shift+Enter: kết quả trước")
+        self.search_previous_shortcut = QShortcut(QKeySequence("Shift+Return"), self.search_box)
+        self.search_previous_shortcut.activated.connect(self.search_previous)
         toolbar.addWidget(self.search_box)
-        self.search_prev_button = QPushButton("↑")
-        self.search_prev_button.setToolTip("Kết quả trước")
-        self.search_prev_button.clicked.connect(self.search_previous)
-        toolbar.addWidget(self.search_prev_button)
-        self.search_next_button = QPushButton("↓")
-        self.search_next_button.setToolTip("Kết quả tiếp theo")
-        self.search_next_button.clicked.connect(self.search_next)
-        toolbar.addWidget(self.search_next_button)
         toolbar.addSeparator()
 
         self.page_input = QSpinBox()
         self.page_input.setMinimum(1)
         self.page_input.setMaximum(1)
         self.page_input.setFixedWidth(72)
+        self.page_input.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.page_input.valueChanged.connect(lambda value: self.go_to_page(value - 1))
         toolbar.addWidget(self.page_input)
         self.page_total = QLabel("/ 0")
@@ -262,6 +267,7 @@ class PdfReaderWindow(QMainWindow):
         toolbar.addWidget(zoom_out)
         self.zoom_input = QSpinBox()
         self.zoom_input.setRange(MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT)
+        self.zoom_input.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.zoom_input.setSuffix("%")
         self.zoom_input.setValue(100)
         self.zoom_input.setKeyboardTracking(False)
@@ -295,6 +301,8 @@ class PdfReaderWindow(QMainWindow):
             ("Ctrl+O", self.open_dialog),
             ("Ctrl+P", self.print_document),
             ("Ctrl+F", lambda: self.search_box.setFocus()),
+            ("F3", self.search_next),
+            ("Shift+F3", self.search_previous),
             ("Left", lambda: self.go_to_page(self.page_index - 1)),
             ("Right", lambda: self.go_to_page(self.page_index + 1)),
             ("Ctrl+Plus", lambda: self.set_zoom(self.zoom * 1.15)),
@@ -484,6 +492,15 @@ class PdfReaderWindow(QMainWindow):
         for page_index, label in enumerate(self.page_labels):
             active_span = (active[1], active[2]) if active and active[0] == page_index else None
             label.set_search_matches(matches_by_page.get(page_index, []), active_span)
+
+    def _on_search_text_changed(self, text: str) -> None:
+        query = text.strip().casefold()
+        if query == self.last_search_query:
+            return
+        self.search_results.clear()
+        self.search_position = -1
+        self.last_search_query = ""
+        self._apply_search_markers()
 
     def _find_all(self) -> None:
         if self.document is None:
