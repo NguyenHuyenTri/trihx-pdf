@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QAction, QImage, QKeySequence, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QApplication,
@@ -26,8 +26,138 @@ from PySide6.QtWidgets import (
 )
 
 
-APP_NAME = "PDF Reader"
+APP_NAME = "HX PDF"
 RENDER_SCALE = 1.35
+MIN_ZOOM_PERCENT = 25
+MAX_ZOOM_PERCENT = 400
+
+
+class PdfPageLabel(QLabel):
+    def __init__(self, page, image: QImage, scale: float, on_focus) -> None:
+        super().__init__()
+        self.pdf_page = page
+        self.scale = scale
+        self.page_height = page.get_height()
+        self.on_focus = on_focus
+        self.selection_start: int | None = None
+        self.selection_end: int | None = None
+        self.search_matches: list[tuple[int, int]] = []
+        self.active_search_match: tuple[int, int] | None = None
+        self._textpage = None
+        self._char_boxes: dict[int, tuple[float, float, float, float]] = {}
+        self._dragging = False
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet("background: white; border: 1px solid #d6dde7;")
+        self.setPixmap(QPixmap.fromImage(image))
+        self.setFixedSize(image.size())
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def _get_textpage(self):
+        if self._textpage is None:
+            self._textpage = self.pdf_page.get_textpage()
+        return self._textpage
+
+    def _char_at(self, point) -> int | None:
+        x = point.x() / self.scale
+        y = self.page_height - point.y() / self.scale
+        try:
+            return self._get_textpage().get_index(
+                x, y, x_tol=max(2.5, 5.0 / self.scale), y_tol=max(3.0, 6.0 / self.scale)
+            )
+        except Exception:
+            return None
+
+    def _char_rect(self, textpage, index: int):
+        if index not in self._char_boxes:
+            try:
+                self._char_boxes[index] = textpage.get_charbox(index)
+            except Exception:
+                self._char_boxes[index] = (0.0, 0.0, 0.0, 0.0)
+        left, bottom, right, top = self._char_boxes[index]
+        if right <= left or top <= bottom:
+            return None
+        return (left * self.scale, (self.page_height - top) * self.scale,
+                (right - left) * self.scale, (top - bottom) * self.scale)
+
+    def _paint_span(self, painter: QPainter, textpage, span: tuple[int, int], color: QColor) -> None:
+        start, count = span
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(color)
+        for index in range(start, start + count):
+            rect = self._char_rect(textpage, index)
+            if rect is not None:
+                x, y, width, height = rect
+                painter.drawRect(int(x), int(y), max(2, int(width + 1)), max(2, int(height)))
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        if not self.search_matches and self.selection_start is None:
+            return
+        try:
+            textpage = self._get_textpage()
+        except Exception:
+            return
+        painter = QPainter(self)
+        for span in self.search_matches:
+            color = QColor(255, 160, 0, 150) if span == self.active_search_match else QColor(255, 230, 0, 105)
+            self._paint_span(painter, textpage, span, color)
+        if self.selection_start is not None and self.selection_end is not None:
+            start = min(self.selection_start, self.selection_end)
+            count = abs(self.selection_end - self.selection_start) + 1
+            self._paint_span(painter, textpage, (start, count), QColor(55, 135, 245, 115))
+        painter.end()
+
+    def set_search_matches(self, matches: list[tuple[int, int]], active: tuple[int, int] | None) -> None:
+        self.search_matches = matches
+        self.active_search_match = active
+        self.update()
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.setFocus()
+            self.on_focus(self)
+            index = self._char_at(event.position())
+            self._dragging = index is not None
+            self.selection_start = index
+            self.selection_end = index
+            self.update()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._dragging and event.buttons() & Qt.MouseButton.LeftButton:
+            index = self._char_at(event.position())
+            if index is not None:
+                self.selection_end = index
+                self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = False
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event) -> None:
+        if event.matches(QKeySequence.StandardKey.Copy):
+            self.copy_selection()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def copy_selection(self) -> str:
+        if self.selection_start is None or self.selection_end is None:
+            return ""
+        start = min(self.selection_start, self.selection_end)
+        count = abs(self.selection_end - self.selection_start) + 1
+        try:
+            return self._get_textpage().get_text_range(index=start, count=count)
+        except Exception:
+            return ""
+
+    def close_textpage(self) -> None:
+        if self._textpage is not None:
+            self._textpage.close()
+            self._textpage = None
+        self._char_boxes.clear()
 
 
 class PdfReaderWindow(QMainWindow):
@@ -41,9 +171,11 @@ class PdfReaderWindow(QMainWindow):
         self.page_index = 0
         self.zoom = RENDER_SCALE
         self.page_text: dict[int, str] = {}
-        self.search_pages: list[int] = []
+        self.search_results: list[tuple[int, int, int]] = []
         self.search_position = -1
+        self.last_search_query = ""
         self.page_labels: list[QLabel] = []
+        self.active_page_label: PdfPageLabel | None = None
         self._build_ui()
         self._build_actions()
         self._set_empty_state()
@@ -68,6 +200,10 @@ class PdfReaderWindow(QMainWindow):
         self.print_button = QPushButton("In")
         self.print_button.clicked.connect(self.print_document)
         toolbar.addWidget(self.print_button)
+        self.copy_button = QPushButton("Sao chép")
+        self.copy_button.setToolTip("Chọn chữ trên trang rồi bấm để sao chép (Ctrl+C)")
+        self.copy_button.clicked.connect(self.copy_selected_text)
+        toolbar.addWidget(self.copy_button)
         toolbar.addSeparator()
 
         self.search_box = QLineEdit()
@@ -85,10 +221,6 @@ class PdfReaderWindow(QMainWindow):
         toolbar.addWidget(self.search_next_button)
         toolbar.addSeparator()
 
-        self.prev_button = QPushButton("‹")
-        self.prev_button.setToolTip("Trang trước")
-        self.prev_button.clicked.connect(lambda: self.go_to_page(self.page_index - 1))
-        toolbar.addWidget(self.prev_button)
         self.page_input = QSpinBox()
         self.page_input.setMinimum(1)
         self.page_input.setMaximum(1)
@@ -97,20 +229,21 @@ class PdfReaderWindow(QMainWindow):
         toolbar.addWidget(self.page_input)
         self.page_total = QLabel("/ 0")
         toolbar.addWidget(self.page_total)
-        self.next_button = QPushButton("›")
-        self.next_button.setToolTip("Trang tiếp theo")
-        self.next_button.clicked.connect(lambda: self.go_to_page(self.page_index + 1))
-        toolbar.addWidget(self.next_button)
         toolbar.addSeparator()
 
         zoom_out = QPushButton("−")
         zoom_out.setToolTip("Thu nhỏ")
         zoom_out.clicked.connect(lambda: self.set_zoom(self.zoom / 1.15))
         toolbar.addWidget(zoom_out)
-        self.zoom_label = QLabel("100%")
-        self.zoom_label.setMinimumWidth(48)
-        self.zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        toolbar.addWidget(self.zoom_label)
+        self.zoom_input = QSpinBox()
+        self.zoom_input.setRange(MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT)
+        self.zoom_input.setSuffix("%")
+        self.zoom_input.setValue(100)
+        self.zoom_input.setKeyboardTracking(False)
+        self.zoom_input.setToolTip("Nhập phần trăm thu phóng rồi nhấn Enter")
+        self.zoom_input.setFixedWidth(82)
+        self.zoom_input.valueChanged.connect(lambda percent: self.set_zoom(RENDER_SCALE * percent / 100.0))
+        toolbar.addWidget(self.zoom_input)
         zoom_in = QPushButton("+")
         zoom_in.setToolTip("Phóng to")
         zoom_in.clicked.connect(lambda: self.set_zoom(self.zoom * 1.15))
@@ -200,13 +333,15 @@ class PdfReaderWindow(QMainWindow):
                 return
 
         if self.document is not None:
+            self._clear_page_widgets()
             self.document.close()
         self.document = new_document
         self.file_path = path
         self.page_index = 0
         self.page_text.clear()
-        self.search_pages.clear()
+        self.search_results.clear()
         self.search_position = -1
+        self.last_search_query = ""
         self.page_input.blockSignals(True)
         self.page_input.setMaximum(len(self.document))
         self.page_input.setValue(1)
@@ -215,7 +350,6 @@ class PdfReaderWindow(QMainWindow):
         self.setWindowTitle(f"{path.name} — {APP_NAME}")
         self.print_button.setEnabled(True)
         self.zoom = RENDER_SCALE
-        self._clear_page_widgets()
         self.render_page()
         self.statusBar().showMessage(f"{path.name}  •  {len(self.document)} trang  •  Tệp không rời khỏi máy tính")
 
@@ -229,28 +363,31 @@ class PdfReaderWindow(QMainWindow):
             pil_image = bitmap.to_pil().convert("RGB")
             raw = pil_image.tobytes("raw", "RGB")
             image = QImage(raw, pil_image.width, pil_image.height, pil_image.width * 3, QImage.Format.Format_RGB888).copy()
-            label = QLabel()
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setStyleSheet("background: white; border: 1px solid #d6dde7;")
-            label.setPixmap(QPixmap.fromImage(image))
-            label.setFixedSize(image.size())
+            label = PdfPageLabel(page, image, self.zoom, self._set_active_page_label)
             self.pages_layout.addWidget(label, alignment=Qt.AlignmentFlag.AlignHCenter)
             self.page_labels.append(label)
         self.page_input.blockSignals(True)
         self.page_input.setValue(self.page_index + 1)
         self.page_input.blockSignals(False)
-        self.zoom_label.setText(f"{round(self.zoom / RENDER_SCALE * 100)}%")
-        self.prev_button.setEnabled(self.page_index > 0)
-        self.next_button.setEnabled(self.page_index < len(self.document) - 1)
+        self.zoom_input.blockSignals(True)
+        self.zoom_input.setValue(round(self.zoom / RENDER_SCALE * 100))
+        self.zoom_input.blockSignals(False)
+        self._apply_search_markers()
         QTimer.singleShot(0, lambda: self._scroll_to_page(self.page_index))
 
     def _clear_page_widgets(self) -> None:
         self.page_labels.clear()
+        self.active_page_label = None
         while self.pages_layout.count():
             item = self.pages_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                if isinstance(widget, PdfPageLabel):
+                    widget.close_textpage()
                 widget.deleteLater()
+
+    def _set_active_page_label(self, label: PdfPageLabel) -> None:
+        self.active_page_label = label
 
     def _scroll_to_page(self, index: int) -> None:
         if not self.page_labels:
@@ -270,8 +407,6 @@ class PdfReaderWindow(QMainWindow):
         self.page_input.blockSignals(True)
         self.page_input.setValue(index + 1)
         self.page_input.blockSignals(False)
-        self.prev_button.setEnabled(index > 0)
-        self.next_button.setEnabled(index < len(self.page_labels) - 1)
 
     def go_to_page(self, index: int) -> None:
         if self.document is None:
@@ -280,12 +415,11 @@ class PdfReaderWindow(QMainWindow):
         self.page_input.blockSignals(True)
         self.page_input.setValue(self.page_index + 1)
         self.page_input.blockSignals(False)
-        self.prev_button.setEnabled(self.page_index > 0)
-        self.next_button.setEnabled(self.page_index < len(self.document) - 1)
         self._scroll_to_page(self.page_index)
 
     def set_zoom(self, value: float) -> None:
-        self.zoom = max(0.35, min(value, 4.0))
+        self.zoom = max(RENDER_SCALE * MIN_ZOOM_PERCENT / 100.0,
+                        min(value, RENDER_SCALE * MAX_ZOOM_PERCENT / 100.0))
         self.render_page()
 
     def fit_page(self) -> None:
@@ -293,8 +427,19 @@ class PdfReaderWindow(QMainWindow):
             return
         width = self.document[self.page_index].get_width() or 595
         available = max(400, self.scroll.viewport().width() - 40)
-        self.zoom = min(available / width, 2.5)
-        self.render_page()
+        self.set_zoom(min(available / width, RENDER_SCALE * MAX_ZOOM_PERCENT / 100.0))
+
+    def copy_selected_text(self) -> None:
+        label = self.active_page_label
+        if label is None:
+            self.statusBar().showMessage("Hãy kéo chọn phần chữ trên trang PDF trước.")
+            return
+        text = label.copy_selection()
+        if not text:
+            self.statusBar().showMessage("Chưa có chữ được chọn để sao chép.")
+            return
+        QApplication.clipboard().setText(text)
+        self.statusBar().showMessage(f"Đã sao chép {len(text)} ký tự.")
 
     def _text_for_page(self, index: int) -> str:
         if index not in self.page_text:
@@ -304,43 +449,70 @@ class PdfReaderWindow(QMainWindow):
             textpage.close()
         return self.page_text[index]
 
+    def _apply_search_markers(self) -> None:
+        matches_by_page: dict[int, list[tuple[int, int]]] = {}
+        for page_index, char_index, char_count in self.search_results:
+            matches_by_page.setdefault(page_index, []).append((char_index, char_count))
+        active = None
+        if 0 <= self.search_position < len(self.search_results):
+            active = self.search_results[self.search_position]
+        for page_index, label in enumerate(self.page_labels):
+            active_span = (active[1], active[2]) if active and active[0] == page_index else None
+            label.set_search_matches(matches_by_page.get(page_index, []), active_span)
+
     def _find_all(self) -> None:
         if self.document is None:
             return
         query = self.search_box.text().strip().casefold()
-        self.search_pages = []
+        self.search_results = []
         self.search_position = -1
+        self.last_search_query = query
         if not query:
+            self._apply_search_markers()
             self.statusBar().showMessage("Nhập từ khóa để tìm trong tài liệu.")
             return
-        for index in range(len(self.document)):
-            if query in self._text_for_page(index).casefold():
-                self.search_pages.append(index)
-        if not self.search_pages:
+        for page_index in range(len(self.document)):
+            textpage = self.document[page_index].get_textpage()
+            searcher = textpage.search(query, match_case=False, match_whole_word=False)
+            try:
+                while True:
+                    result = searcher.get_next()
+                    if result is None:
+                        break
+                    char_index, char_count = result
+                    self.search_results.append((page_index, char_index, char_count))
+            finally:
+                searcher.close()
+                textpage.close()
+        self._apply_search_markers()
+        if not self.search_results:
             self.statusBar().showMessage("Không tìm thấy nội dung phù hợp.")
             return
         self.search_position = 0
         self._show_search_result()
 
     def _show_search_result(self) -> None:
-        if not self.search_pages:
+        if not self.search_results:
             return
-        index = self.search_pages[self.search_position]
-        self.go_to_page(index)
-        self.statusBar().showMessage(f"Kết quả {self.search_position + 1}/{len(self.search_pages)} — trang {index + 1}")
+        page_index, _, _ = self.search_results[self.search_position]
+        self._apply_search_markers()
+        self.go_to_page(page_index)
+        self.statusBar().showMessage(f"Kết quả {self.search_position + 1}/{len(self.search_results)} — trang {page_index + 1}")
 
     def search_next(self) -> None:
-        if not self.search_pages or not self.search_box.text().strip():
+        query = self.search_box.text().strip().casefold()
+        if not self.search_results or not query or query != self.last_search_query:
             self._find_all()
             return
-        self.search_position = (self.search_position + 1) % len(self.search_pages)
+        self.search_position = (self.search_position + 1) % len(self.search_results)
         self._show_search_result()
 
     def search_previous(self) -> None:
-        if not self.search_pages or not self.search_box.text().strip():
+        query = self.search_box.text().strip().casefold()
+        if not self.search_results or not query or query != self.last_search_query:
             self._find_all()
             return
-        self.search_position = (self.search_position - 1) % len(self.search_pages)
+        self.search_position = (self.search_position - 1) % len(self.search_results)
         self._show_search_result()
 
     def print_document(self) -> None:
@@ -383,11 +555,53 @@ class PdfReaderWindow(QMainWindow):
         self.statusBar().showMessage("Tài liệu đã được gửi tới máy in.")
 
 
+def register_pdf_open_with() -> None:
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    import winreg
+
+    exe_path = str(Path(sys.executable).resolve())
+    exe_name = Path(exe_path).name
+    classes = r"Software\Classes"
+    app_key = classes + rf"\Applications\{exe_name}"
+    prog_id = "HXPDF.Document"
+    command = f'"{exe_path}" "%1"'
+
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, app_key) as key:
+        winreg.SetValueEx(key, "FriendlyAppName", 0, winreg.REG_SZ, "HX PDF")
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, app_key + r"\SupportedTypes") as key:
+        winreg.SetValueEx(key, ".pdf", 0, winreg.REG_SZ, "")
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, app_key + r"\shell\open\command") as key:
+        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, command)
+
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, classes + rf"\{prog_id}") as key:
+        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, "HX PDF document")
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, classes + rf"\{prog_id}\DefaultIcon") as key:
+        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, f'"{exe_path}",0')
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, classes + rf"\{prog_id}\shell\open\command") as key:
+        winreg.SetValueEx(key, None, 0, winreg.REG_SZ, command)
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, classes + r"\.pdf\OpenWithProgids") as key:
+        winreg.SetValueEx(key, prog_id, 0, winreg.REG_SZ, "")
+
+    try:
+        import ctypes
+        ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
+    except Exception:
+        pass
+
+
 def main() -> int:
+    input_files = list(sys.argv[1:])
+    register_pdf_open_with()
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     window = PdfReaderWindow()
     window.show()
+    for argument in input_files:
+        candidate = Path(argument.strip('"'))
+        if candidate.suffix.lower() == ".pdf" and candidate.is_file():
+            QTimer.singleShot(0, lambda path=candidate: window.open_file(path))
+            break
     return app.exec()
 
 
