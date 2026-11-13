@@ -2,6 +2,7 @@
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files
 
 datas = collect_data_files("pypdfium2")
+datas += [("app_icon.png", ".")]
 binaries = collect_dynamic_libs("pypdfium2")
 
 a = Analysis(
@@ -25,6 +26,7 @@ exe = EXE(
     a.datas,
     [],
     name="HX PDF",
+    icon="app_icon.ico",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QAction, QColor, QImage, QKeySequence, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QIcon, QImage, QKeySequence, QPainter, QPixmap
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter
 from PySide6.QtWidgets import (
     QApplication,
@@ -30,6 +30,11 @@ APP_NAME = "HX PDF"
 RENDER_SCALE = 1.35
 MIN_ZOOM_PERCENT = 25
 MAX_ZOOM_PERCENT = 400
+
+
+def resource_path(name: str) -> Path:
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return bundle_root / name
 
 
 class PdfPageLabel(QLabel):
@@ -183,6 +188,7 @@ class PdfReaderWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} — Đọc và in tài liệu PDF")
+        self.setWindowIcon(QIcon(str(resource_path("app_icon.png"))))
         self.resize(1180, 820)
         self.setMinimumSize(760, 560)
         self.document = None
@@ -614,6 +620,7 @@ def main() -> int:
     register_pdf_open_with()
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+    app.setWindowIcon(QIcon(str(resource_path("app_icon.png"))))
     window = PdfReaderWindow()
     window.show()
     for argument in input_files:
