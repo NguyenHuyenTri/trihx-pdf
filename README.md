@@ -10,27 +10,12 @@
 - In với cấu hình máy in, khổ giấy, hướng giấy, màu và số bản.
 - Hiển thị chú thích và trường biểu mẫu PDF khi có thể.
 
-## Lần đầu thiết lập trên máy Windows
+## Cài đặt lần đầu
 
-Cài Git và Python, sau đó mở Command Prompt tại nơi muốn lưu dự án và chạy:
-
-```bat
-git clone https://github.com/NguyenHuyenTri/trihx-pdf.git
-cd trihx-pdf
-capnhat.bat
-```
-
-Lệnh đầu chỉ cần chạy một lần. Tệp chạy được tạo tại `dist\HX PDF.exe`.
+Cài Python, tải mã nguồn ZIP từ repo GitHub và giải nén vào một thư mục trên máy. Nhấp đúp `capnhat.bat`. Tệp này tải bản mới nhất, cài thư viện và tạo `dist\HX PDF.exe`.
 
 ## Cập nhật sau này
 
-Mở thư mục dự án đã clone và nhấp đúp `capnhat.bat`. Tệp này lấy mã mới nhất từ GitHub, cài các thư viện cần thiết và tạo lại `dist\HX PDF.exe`.
+Nhấp đúp `capnhat.bat` trong thư mục dự án. Tệp sẽ tự tải mã mới nhất từ GitHub và tạo lại `dist\HX PDF.exe`. Không cần cài Git.
 
-## Tự build bằng tay
-
-```bat
-python -m venv .venv
-.venv\Scripts\activate
-python -m pip install -r requirements.txt pyinstaller
-python -m PyInstaller --clean --noconfirm PDFReader.spec
-```
+Repo: https://github.com/NguyenHuyenTri/trihx-pdf
