@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -247,6 +248,20 @@ class PdfReaderWindow(QMainWindow):
         file_toolbar.setMovable(False)
         file_toolbar.setFloatable(False)
         self.addToolBar(file_toolbar)
+
+        self.file_menu_button = QToolButton()
+        self.file_menu_button.setText("☰ File")
+        self.file_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.file_menu = QMenu(self.file_menu_button)
+        file_open_action = self.file_menu.addAction("Open")
+        file_open_action.triggered.connect(self.open_dialog)
+        file_recent_action = self.file_menu.addAction("Recent")
+        file_recent_action.triggered.connect(self._show_recent_popup)
+        file_print_action = self.file_menu.addAction("In")
+        file_print_action.triggered.connect(self.print_document)
+        self.file_menu_button.setMenu(self.file_menu)
+        file_toolbar.addWidget(self.file_menu_button)
+        file_toolbar.addSeparator()
 
         open_button = QPushButton("Open")
         open_button.clicked.connect(self.open_dialog)
