@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import sys
+import json
 from datetime import datetime
 from pathlib import Path
 
 import pypdfium2 as pdfium
-from PySide6.QtCore import Qt, QSize, QTimer, QSettings
+from PySide6.QtCore import Qt, QSize, QTimer, QSettings, QPoint
 from PySide6.QtGui import QAction, QColor, QIcon, QImage, QIntValidator, QKeySequence, QPainter, QPixmap, QShortcut
-from PySide6.QtPrintSupport import QPrintDialog, QPrinter
+from PySide6.QtPrintSupport import QPrintPreviewDialog, QPrinter
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
@@ -235,7 +237,7 @@ class PdfReaderWindow(QMainWindow):
             QToolButton, QPushButton { color: #26354a; background: #ffffff; border: 1px solid #d7e0eb; border-radius: 8px; padding: 7px 12px; }
             QToolButton:hover, QPushButton:hover { background: #f0f6ff; border-color: #9bbce8; }
             QLineEdit { color: #26354a; background: white; border: 1px solid #d7e0eb; border-radius: 7px; padding: 5px 4px; }
-            QTabBar::tab { background: #e8edf4; color: #34445a; padding: 7px 14px; margin-right: 3px; border: 1px solid #d8e0eb; border-bottom: none; border-top-left-radius: 7px; border-top-right-radius: 7px; }
+            QTabBar::tab { background: #e8edf4; color: #34445a; padding: 7px 14px; margin-right: 3px; max-width: 260px; border: 1px solid #d8e0eb; border-bottom: none; border-top-left-radius: 7px; border-top-right-radius: 7px; }
             QTabBar::tab:selected { background: #ffffff; color: #1c2d45; }
             QTabBar::tab:hover { background: #f7f9fc; }
             QStatusBar { background: #ffffff; border-top: 1px solid #dce3ec; color: #536276; }
@@ -249,8 +251,7 @@ class PdfReaderWindow(QMainWindow):
         open_button.clicked.connect(self.open_dialog)
         toolbar.addWidget(open_button)
         self.recent_button = QPushButton("Recent")
-        self.recent_button.setCheckable(True)
-        self.recent_button.toggled.connect(self._toggle_recent_panel)
+        self.recent_button.clicked.connect(self._show_recent_popup)
         toolbar.addWidget(self.recent_button)
         self.print_button = QPushButton("In")
         self.print_button.clicked.connect(self.print_document)
@@ -325,18 +326,19 @@ class PdfReaderWindow(QMainWindow):
         self.tab_bar.setExpanding(False)
         self.tab_bar.setUsesScrollButtons(True)
         self.tab_bar.setElideMode(Qt.TextElideMode.ElideMiddle)
+        self.tab_bar.setIconSize(QSize(16, 16))
         self.tab_bar.currentChanged.connect(self._on_tab_changed)
         self.tab_bar.tabCloseRequested.connect(self.close_tab)
         self.add_tab_button = QToolButton()
         self.add_tab_button.setText("+")
         self.add_tab_button.setToolTip("Mở thêm PDF trong tab mới")
         self.add_tab_button.clicked.connect(self.open_dialog)
-        document_tabs_toolbar = QToolBar("Các tài liệu đang mở")
-        document_tabs_toolbar.setMovable(False)
-        document_tabs_toolbar.setFloatable(False)
-        document_tabs_toolbar.addWidget(self.tab_bar)
-        document_tabs_toolbar.addWidget(self.add_tab_button)
-        self.insertToolBar(toolbar, document_tabs_toolbar)
+        self.document_tabs_toolbar = QToolBar("Các tài liệu đang mở")
+        self.document_tabs_toolbar.setMovable(False)
+        self.document_tabs_toolbar.setFloatable(False)
+        self.document_tabs_toolbar.addWidget(self.tab_bar)
+        self.document_tabs_toolbar.addWidget(self.add_tab_button)
+        self.insertToolBar(toolbar, self.document_tabs_toolbar)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -349,11 +351,10 @@ class PdfReaderWindow(QMainWindow):
         self.scroll.setWidget(self.pages_widget)
         self.scroll.verticalScrollBar().valueChanged.connect(self._sync_page_from_scroll)
 
-        self.recent_panel = QWidget()
-        self.recent_panel.setFixedWidth(330)
-        self.recent_panel.setStyleSheet("background: #ffffff; border-right: 1px solid #dce3ec;")
-        recent_layout = QVBoxLayout(self.recent_panel)
-        recent_layout.setContentsMargins(10, 8, 8, 8)
+        self.recent_popup = QDialog(self, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.recent_popup.setStyleSheet("QDialog { background: #ffffff; border: 1px solid #cfd7e2; border-radius: 8px; }")
+        recent_layout = QVBoxLayout(self.recent_popup)
+        recent_layout.setContentsMargins(12, 10, 12, 10)
         recent_layout.setSpacing(6)
         recent_header = QHBoxLayout()
         recent_title = QLabel("Recent")
@@ -370,24 +371,17 @@ class PdfReaderWindow(QMainWindow):
         self.recent_list.setStyleSheet("QListWidget { border: 0; } QListWidget::item { border-bottom: 1px solid #edf0f4; }")
         self.recent_list.itemClicked.connect(self._open_recent_item)
         recent_layout.addWidget(self.recent_list, 1)
-        self.recent_panel.hide()
         self._refresh_recent_list()
-
-        content_row = QHBoxLayout()
-        content_row.setContentsMargins(0, 0, 0, 0)
-        content_row.setSpacing(0)
-        content_row.addWidget(self.recent_panel)
-        content_row.addWidget(self.scroll, 1)
-        central = QWidget()
-        central_layout = QVBoxLayout(central)
-        central_layout.setContentsMargins(4, 0, 4, 0)
-        central_layout.setSpacing(0)
-        central_layout.addLayout(content_row, 1)
-        self.setCentralWidget(central)
+        self.recent_popup.resize(720, 600)
+        self.setCentralWidget(self.scroll)
         self.setStatusBar(QStatusBar())
 
     def _load_recent_files(self) -> list[dict[str, str | float]]:
-        entries = self.settings.value("recentFiles", []) or []
+        saved = self.settings.value("recentFilesJson", "")
+        try:
+            entries = json.loads(saved) if saved else self.settings.value("recentFiles", []) or []
+        except (TypeError, ValueError):
+            entries = self.settings.value("recentFiles", []) or []
         recent: list[dict[str, str | float]] = []
         for entry in entries:
             if isinstance(entry, dict) and entry.get("path"):
@@ -400,13 +394,17 @@ class PdfReaderWindow(QMainWindow):
         return recent[:30]
 
     def _record_recent_file(self, path: Path) -> None:
-        path_string = str(path.resolve())
-        self.recent_files = [entry for entry in self.recent_files if str(entry.get("path", "")).casefold() != path_string.casefold()]
-        self.recent_files.insert(0, {"path": path_string, "opened": datetime.now().timestamp()})
-        self.recent_files = self.recent_files[:30]
-        self.settings.setValue("recentFiles", self.recent_files)
-        self.settings.sync()
-        self._refresh_recent_list()
+        try:
+            path_string = str(path.resolve())
+            self.recent_files = [entry for entry in self.recent_files if str(entry.get("path", "")).casefold() != path_string.casefold()]
+            self.recent_files.insert(0, {"path": path_string, "opened": datetime.now().timestamp()})
+            self.recent_files = self.recent_files[:30]
+            self.settings.setValue("recentFilesJson", json.dumps(self.recent_files, ensure_ascii=False))
+            self.settings.sync()
+            self._refresh_recent_list()
+        except Exception:
+            # Recent history must never prevent opening a valid PDF.
+            pass
 
     def _refresh_recent_list(self) -> None:
         if not hasattr(self, "recent_list"):
@@ -414,10 +412,14 @@ class PdfReaderWindow(QMainWindow):
         self.recent_list.clear()
         icon = QIcon(str(resource_path("app_icon.png")))
         for entry in self.recent_files:
-            path = Path(str(entry.get("path", "")))
-            if not str(path):
+            path_value = str(entry.get("path", "")).strip()
+            if not path_value:
                 continue
-            opened = float(entry.get("opened", 0) or 0)
+            path = Path(path_value)
+            try:
+                opened = float(entry.get("opened", 0) or 0)
+            except (TypeError, ValueError):
+                opened = 0.0
             if opened:
                 opened_at = datetime.fromtimestamp(opened)
                 time_label = ("Today " if opened_at.date() == datetime.now().date() else opened_at.strftime("%d-%m ")) + opened_at.strftime("%H:%M")
@@ -463,10 +465,17 @@ class PdfReaderWindow(QMainWindow):
             empty.setFlags(Qt.ItemFlag.NoItemFlags)
             self.recent_list.addItem(empty)
 
-    def _toggle_recent_panel(self, visible: bool) -> None:
-        self.recent_panel.setVisible(visible)
-        if visible:
-            self._refresh_recent_list()
+    def _show_recent_popup(self) -> None:
+        self._refresh_recent_list()
+        screen = self.screen().availableGeometry()
+        width = min(720, screen.width() - 20)
+        height = min(600, screen.height() - 40)
+        origin = self.mapToGlobal(QPoint(8, self.document_tabs_toolbar.height() + 48))
+        x = min(max(origin.x(), screen.left() + 10), screen.right() - width - 10)
+        y = min(max(origin.y(), screen.top() + 10), screen.bottom() - height - 10)
+        self.recent_popup.resize(width, height)
+        self.recent_popup.move(x, y)
+        self.recent_popup.show()
 
     def _open_recent_item(self, item: QListWidgetItem) -> None:
         path = item.data(Qt.ItemDataRole.UserRole)
@@ -477,7 +486,7 @@ class PdfReaderWindow(QMainWindow):
             QMessageBox.warning(self, "Không tìm thấy tệp", f"Tệp PDF này không còn ở vị trí đã lưu:\n{candidate}")
             return
         self.open_file(candidate)
-        self.recent_button.setChecked(False)
+        self.recent_popup.hide()
 
     def _build_actions(self) -> None:
         shortcuts = [
@@ -574,7 +583,7 @@ class PdfReaderWindow(QMainWindow):
             "search_text": "",
         }
         self._tab_change_blocked = True
-        index = self.tab_bar.addTab(path.name)
+        index = self.tab_bar.addTab(QIcon(str(resource_path("app_icon.png"))), path.name)
         self.tab_bar.setTabData(index, tab_key)
         self.tab_bar.setTabToolTip(index, str(path))
         self.tab_bar.setCurrentIndex(index)
@@ -899,11 +908,15 @@ class PdfReaderWindow(QMainWindow):
             return
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         printer.setResolution(300)
-        dialog = QPrintDialog(printer, self)
-        dialog.setWindowTitle("Cấu hình in PDF")
-        if dialog.exec() != QPrintDialog.DialogCode.Accepted:
-            return
+        dialog = QPrintPreviewDialog(printer, self)
+        dialog.setWindowTitle("Xem trước khi in")
+        dialog.paintRequested.connect(self._render_print_document)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.statusBar().showMessage("Tài liệu đã được gửi tới máy in.")
 
+    def _render_print_document(self, printer: QPrinter) -> None:
+        if self.document is None:
+            return
         first = printer.fromPage() - 1 if printer.fromPage() > 0 else 0
         last = printer.toPage() - 1 if printer.toPage() > 0 else len(self.document) - 1
         first = max(0, min(first, len(self.document) - 1))
@@ -931,7 +944,6 @@ class PdfReaderWindow(QMainWindow):
             QMessageBox.critical(self, "Lỗi khi in", str(exc))
         finally:
             painter.end()
-        self.statusBar().showMessage("Tài liệu đã được gửi tới máy in.")
 
     def closeEvent(self, event) -> None:
         self._clear_page_widgets()
