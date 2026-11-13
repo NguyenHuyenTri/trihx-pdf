@@ -243,20 +243,25 @@ class PdfReaderWindow(QMainWindow):
             QStatusBar { background: #ffffff; border-top: 1px solid #dce3ec; color: #536276; }
         """)
 
-        toolbar = QToolBar("Thanh công cụ")
-        toolbar.setMovable(False)
-        self.addToolBar(toolbar)
+        file_toolbar = QToolBar("Tệp")
+        file_toolbar.setMovable(False)
+        file_toolbar.setFloatable(False)
+        self.addToolBar(file_toolbar)
 
         open_button = QPushButton("Open")
         open_button.clicked.connect(self.open_dialog)
-        toolbar.addWidget(open_button)
+        file_toolbar.addWidget(open_button)
         self.recent_button = QPushButton("Recent")
         self.recent_button.clicked.connect(self._show_recent_popup)
-        toolbar.addWidget(self.recent_button)
+        file_toolbar.addWidget(self.recent_button)
         self.print_button = QPushButton("In")
         self.print_button.clicked.connect(self.print_document)
-        toolbar.addWidget(self.print_button)
-        toolbar.addSeparator()
+        file_toolbar.addWidget(self.print_button)
+
+        toolbar = QToolBar("Điều khiển tài liệu")
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        self.addToolBar(toolbar)
 
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Tìm trong tài liệu")
@@ -345,7 +350,7 @@ class PdfReaderWindow(QMainWindow):
         self.document_tabs_toolbar.addWidget(self.app_home_button)
         self.document_tabs_toolbar.addWidget(self.tab_bar)
         self.document_tabs_toolbar.addWidget(self.add_tab_button)
-        self.insertToolBar(toolbar, self.document_tabs_toolbar)
+        self.insertToolBar(file_toolbar, self.document_tabs_toolbar)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
