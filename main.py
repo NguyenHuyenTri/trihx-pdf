@@ -181,7 +181,10 @@ class PdfPageLabel(QLabel):
         start = min(self.selection_start, self.selection_end)
         count = abs(self.selection_end - self.selection_start) + 1
         try:
-            return self._get_textpage().get_text_range(start, count).strip("\x00")
+            text = self._get_textpage().get_text_range(start, count).replace("\x00", "")
+            if text:
+                QApplication.clipboard().setText(text)
+            return text
         except Exception:
             return ""
 
