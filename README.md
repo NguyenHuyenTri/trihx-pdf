@@ -5,8 +5,10 @@
 ## Tính năng
 
 - Mở PDF bằng hộp thoại hoặc kéo thả tệp vào cửa sổ.
+- Chọn chữ trên trang và sao chép bằng nút **Sao chép** hoặc `Ctrl+C`.
 - Cuộn dọc liên tục qua các trang; có điều hướng trang, thu phóng và vừa trang.
-- Tìm văn bản trong tài liệu.
+- Tìm văn bản và tự cuộn đến từng kết quả, đánh dấu vị trí khớp.
+- Mở tệp PDF qua **Open with → HX PDF** sau lần đầu chạy ứng dụng.
 - In với cấu hình máy in, khổ giấy, hướng giấy, màu và số bản.
 - Hiển thị chú thích và trường biểu mẫu PDF khi có thể.
 
