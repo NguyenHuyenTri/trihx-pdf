@@ -4,6 +4,11 @@ $tempRoot = Join-Path $env:TEMP ("hxp-update-" + [guid]::NewGuid().ToString("N")
 $archivePath = Join-Path $tempRoot "source.zip"
 
 try {
+    $runningApp = Get-Process -Name "HX PDF" -ErrorAction SilentlyContinue
+    if ($runningApp) {
+        throw "HX PDF dang mo. Hay dong tat ca cua so HX PDF roi chay lai capnhat.bat."
+    }
+
     New-Item -ItemType Directory -Path $tempRoot | Out-Null
     $archiveUrl = "https://codeload.github.com/NguyenHuyenTri/trihx-pdf/zip/refs/heads/main"
     Write-Host "Dang tai ma nguon HX PDF moi nhat..."
