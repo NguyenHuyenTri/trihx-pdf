@@ -217,7 +217,7 @@ def _activate_document(path, program, *, printing):
 
 
 class OfficeWindow:
-    """Temporarily align a separate Office window with the document area."""
+    """Host the Office window in the active document pane."""
     def __init__(self, hwnd):
         import win32con
         import win32gui
@@ -225,54 +225,65 @@ class OfficeWindow:
         self.hwnd = hwnd
         self.placement = win32gui.GetWindowPlacement(hwnd)
         self.style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
+        self.original_parent = win32gui.GetAncestor(hwnd, 1)  # GA_PARENT excludes the owner.
         self.identity = self._identity()
-        self.hidden_with_host = False
+        self.host = None
 
     def _identity(self):
         import win32process
 
         return win32process.GetWindowThreadProcessId(self.hwnd)
 
-    def move(self, x, y, width, height, *, hide_title=False):
+    def _exists(self):
+        import win32gui
+
+        return win32gui.IsWindow(self.hwnd) and self._identity() == self.identity
+
+    def dock(self, host, width, height, *, hide_title=False):
         import win32con
         import win32gui
 
-        if not win32gui.IsWindow(self.hwnd) or self._identity() != self.identity:
+        if not self._exists():
             raise RuntimeError("Cửa sổ Office đã thay đổi hoặc đã đóng.")
-        show_command = win32gui.GetWindowPlacement(self.hwnd)[1]
-        if win32gui.IsIconic(self.hwnd) or show_command == win32con.SW_SHOWMAXIMIZED:
-            win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
-        flags = win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW
-        style = self.style & ~win32con.WS_CAPTION if hide_title else self.style
-        if win32gui.GetWindowLong(self.hwnd, win32con.GWL_STYLE) != style:
+        if width <= 0 or height <= 0:
+            return
+        flags = win32con.SWP_NOACTIVATE | win32con.SWP_NOZORDER
+        style = (self.style | win32con.WS_CHILD) & ~(win32con.WS_POPUP | win32con.WS_THICKFRAME)
+        if hide_title:
+            style &= ~win32con.WS_CAPTION
+        if self.host != host or win32gui.GetParent(self.hwnd) != host:
+            show_command = win32gui.GetWindowPlacement(self.hwnd)[1]
+            if win32gui.IsIconic(self.hwnd) or show_command == win32con.SW_SHOWMAXIMIZED:
+                win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
+            if win32gui.GetParent(self.hwnd) != host:
+                win32gui.SetWindowLong(self.hwnd, win32con.GWL_STYLE, style)
+                win32gui.SetParent(self.hwnd, host)
+                self.host = host
+            if win32gui.GetParent(self.hwnd) != host:
+                raise RuntimeError("Windows không gắn được cửa sổ Office vào tab.")
+            self.host = host
+            flags |= win32con.SWP_FRAMECHANGED | win32con.SWP_SHOWWINDOW
+        elif win32gui.GetWindowLong(self.hwnd, win32con.GWL_STYLE) != style:
             win32gui.SetWindowLong(self.hwnd, win32con.GWL_STYLE, style)
             flags |= win32con.SWP_FRAMECHANGED
-        win32gui.SetWindowPos(self.hwnd, win32con.HWND_TOP, x, y, width, height, flags)
-        left, top, right, bottom = win32gui.GetWindowRect(self.hwnd)
-        if max(abs(left - x), abs(top - y), abs(right - x - width), abs(bottom - y - height)) > 12:
-            raise RuntimeError("Word không nhận đúng kích thước vùng tài liệu.")
-
-    def follow_host_visibility(self, minimized):
-        import win32con
-        import win32gui
-
-        if not win32gui.IsWindow(self.hwnd) or self._identity() != self.identity:
-            raise RuntimeError("Cửa sổ Office đã thay đổi hoặc đã đóng.")
-        if minimized and not self.hidden_with_host and win32gui.IsWindowVisible(self.hwnd):
-            win32gui.ShowWindow(self.hwnd, win32con.SW_HIDE)
-            self.hidden_with_host = True
-        elif not minimized and self.hidden_with_host:
-            win32gui.ShowWindow(self.hwnd, win32con.SW_SHOWNOACTIVATE)
-            self.hidden_with_host = False
+        win32gui.SetWindowPos(self.hwnd, 0, 0, 0, width, height, flags)
+        if win32gui.GetParent(self.hwnd) != host:
+            raise RuntimeError("Office đã tách cửa sổ khỏi vùng tài liệu.")
 
     def restore(self):
         import win32con
         import win32gui
 
-        if win32gui.IsWindow(self.hwnd) and self._identity() == self.identity:
-            win32gui.SetWindowLong(self.hwnd, win32con.GWL_STYLE, self.style)
-            win32gui.SetWindowPos(self.hwnd, 0, 0, 0, 0, 0, win32con.SWP_FRAMECHANGED |
-                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE |
-                                  win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
-            win32gui.SetWindowPlacement(self.hwnd, self.placement)
-            self.follow_host_visibility(False)
+        if not self._exists():
+            return
+        if self.host is not None and win32gui.GetParent(self.hwnd) == self.host:
+            parent = self.original_parent
+            if parent == win32gui.GetDesktopWindow():
+                parent = 0
+            win32gui.SetParent(self.hwnd, parent or 0)
+            self.host = None
+        win32gui.SetWindowLong(self.hwnd, win32con.GWL_STYLE, self.style)
+        win32gui.SetWindowPos(self.hwnd, 0, 0, 0, 0, 0, win32con.SWP_FRAMECHANGED |
+                              win32con.SWP_NOMOVE | win32con.SWP_NOSIZE |
+                              win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+        win32gui.SetWindowPlacement(self.hwnd, self.placement)
