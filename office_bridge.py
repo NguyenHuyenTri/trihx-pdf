@@ -1,6 +1,7 @@
 """Open originals with the installed desktop Office applications."""
 from pathlib import Path
 import os
+import re
 import sys
 import subprocess
 
@@ -24,10 +25,9 @@ OFFICE_EXECUTABLES = {
 _office_sessions = {}
 
 
-def launch_native_office(path):
+def native_office_program(application):
     import winreg
 
-    application = OFFICE_TYPES[path.suffix.lower()][0]
     executable = OFFICE_EXECUTABLES[application]
     key_path = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{executable}"
     for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
@@ -35,27 +35,70 @@ def launch_native_office(path):
             try:
                 with winreg.OpenKey(hive, key_path, 0, winreg.KEY_READ | view) as key:
                     program = Path(os.path.expandvars(winreg.QueryValueEx(key, "")[0]).strip('"'))
-                if program.is_file():
-                    subprocess.Popen([str(program), str(path)])
-                    return
+                if program.name.casefold() == executable.casefold() and program.is_file():
+                    return program.resolve()
             except OSError:
                 continue
-    raise RuntimeError(f"Không tìm thấy Microsoft {application} bản desktop.")
+    for variable in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+        directory = os.environ.get(variable)
+        if directory:
+            for version in ("root/Office16", "Office16", "Office15", "Office14"):
+                program = Path(directory) / "Microsoft Office" / version / executable
+                if program.is_file():
+                    return program.resolve()
+    raise RuntimeError(f"Không tìm thấy Microsoft {application} bản desktop. Nếu máy chỉ có WPS, "
+                       "hãy cài Microsoft Office để mở tài liệu bằng Microsoft Office trong TRIHX.")
+
+
+def office_process_path(hwnd):
+    import win32api
+    import win32process
+
+    _, pid = win32process.GetWindowThreadProcessId(hwnd)
+    process = win32api.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    try:
+        return Path(win32process.QueryFullProcessImageName(process, 0)).resolve()
+    finally:
+        process.Close()
+
+
+def verify_com_registration(prog_id, program):
+    import winreg
+
+    with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, prog_id + r"\CLSID") as key:
+        clsid = winreg.QueryValueEx(key, "")[0]
+    with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, rf"CLSID\{clsid}\LocalServer32") as key:
+        command = os.path.expandvars(winreg.QueryValueEx(key, "")[0]).strip()
+    match = re.match(r'(?:"([^"]+)"|(.+?\.exe)(?:\s|$))', command, re.IGNORECASE)
+    if not match:
+        raise RuntimeError("Không xác định được chương trình đăng ký tự động hóa Office.")
+    registered = Path(match.group(1) or match.group(2)).resolve()
+    if registered != program:
+        raise RuntimeError("Đăng ký tự động hóa Office đang trỏ tới chương trình khác.")
+
+
+def verify_office_server(app, program):
+    # Application.Path is available before opening a document, even if Word has no active window.
+    app_path = Path(str(app.Path)) / program.name
+    if os.path.normcase(str(app_path.resolve())) != os.path.normcase(str(program)):
+        raise RuntimeError("Đăng ký tự động hóa Office đang trỏ tới chương trình khác.")
 
 
 def show_office(path: Path, *, printing=False):
     if sys.platform != "win32":
         raise RuntimeError("Cần Windows và Microsoft Office bản desktop.")
+    application = OFFICE_TYPES[path.suffix.lower()][0]
+    program = native_office_program(application)
     try:
-        return _activate_document(path, printing=printing)
+        return _activate_document(path, program, printing=printing)
     except Exception:
         if printing:
             raise
-        launch_native_office(path)
+        subprocess.Popen([str(program), str(path)])
         return 0
 
 
-def _activate_document(path, *, printing):
+def _activate_document(path, program, *, printing):
     import win32com.client
     import win32con
     import win32gui
@@ -66,7 +109,9 @@ def _activate_document(path, *, printing):
     try:
         app = win32com.client.GetActiveObject(prog_id)
     except com_error:
+        verify_com_registration(prog_id, program)
         app = win32com.client.Dispatch(prog_id)
+    verify_office_server(app, program)
     _office_sessions[app_name] = app
     collection = getattr(app, collection_name)
     target = os.path.normcase(str(path))
@@ -101,6 +146,8 @@ def _activate_document(path, *, printing):
                 break
         except (AttributeError, com_error, OSError):
             continue
+    if hwnd and office_process_path(hwnd) != program:
+        raise RuntimeError("Cửa sổ tài liệu không thuộc Microsoft Office đã chọn.")
     if hwnd:
         if win32gui.IsIconic(hwnd):
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
