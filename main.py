@@ -240,6 +240,7 @@ class PdfReaderWindow(QMainWindow):
         self.active_tab_key: str | None = None
         self._tab_change_blocked = False
         self.office_window = None
+        self.office_diagnostic = "Chưa mở tệp Office."
         self.settings = QSettings("TRIHX", "HX PDF")
         self.recent_files: list[dict[str, str | float]] = self._load_recent_files()
         self._build_ui()
@@ -373,6 +374,7 @@ class PdfReaderWindow(QMainWindow):
         self.hide_caption.setChecked(self.settings.value("hideOfficeCaption", True, type=bool))
         self.hide_caption.toggled.connect(self._set_office_caption)
         options.addAction("Khôi phục cửa sổ Office", self._restore_office_window)
+        options.addAction("Sao chép chẩn đoán", self._copy_office_diagnostic)
         self.office_options.setMenu(options)
         self.office_toolbar_action = toolbar.addWidget(self.office_options)
 
@@ -1106,11 +1108,13 @@ class PdfReaderWindow(QMainWindow):
     def _open_office(self, path, *, printing=False):
         try:
             hwnd, program = show_office(path, printing=printing)
+            self.office_diagnostic = "Đang tìm cửa sổ Office."
             if not printing:
                 self._office_open_token = object()
                 self._attach_office_when_ready(path, program, self._office_open_token, hwnd=hwnd)
             self._record_recent_file(path)
         except Exception as exc:
+            self.office_diagnostic = f"Mở tệp: {exc}"
             QMessageBox.warning(self, "Microsoft Office",
                                 f"Không mở được thao tác trong Microsoft Office.\n{exc}")
 
@@ -1125,15 +1129,23 @@ class PdfReaderWindow(QMainWindow):
                     self.office_window = OfficeWindow(hwnd)
                 self._align_office_window()
                 if self.office_window is not None:
-                    self.statusBar().showMessage("Đã căn cửa sổ Microsoft Office theo vùng tài liệu.")
+                    self.office_diagnostic = "Đã căn đúng kích thước cửa sổ. Thanh tiêu đề do Office tự vẽ có thể vẫn hiện."
+                    self.statusBar().showMessage(self.office_diagnostic)
                     return
-        except Exception:
+        except Exception as exc:
+            self.office_diagnostic = f"Nhận diện cửa sổ: {exc}"
             self._restore_office_window()
         if attempt < 39:
             QTimer.singleShot(300, lambda: self._attach_office_when_ready(
                 path, program, token, attempt=attempt + 1))
         else:
-            self.statusBar().showMessage("Chưa ghép được cửa sổ Office với tab. Bạn vẫn có thể dùng cửa sổ Office riêng.")
+            if self.office_diagnostic == "Đang tìm cửa sổ Office.":
+                self.office_diagnostic = "Hết thời gian chờ: không tìm thấy cửa sổ Office khớp tên tài liệu."
+            self.statusBar().showMessage(self.office_diagnostic)
+
+    def _copy_office_diagnostic(self):
+        QApplication.clipboard().setText(f"TRIHX Office · Căn cửa sổ v2\n{self.office_diagnostic}")
+        self.statusBar().showMessage("Đã sao chép chẩn đoán Office.")
 
     def _set_office_caption(self, hidden):
         self.settings.setValue("hideOfficeCaption", hidden)
@@ -1154,7 +1166,8 @@ class PdfReaderWindow(QMainWindow):
                                         hide_title=self.hide_caption.isChecked())
             else:
                 raise OSError("Không lấy được kích thước vùng tài liệu.")
-        except Exception:
+        except Exception as exc:
+            self.office_diagnostic = f"Căn cửa sổ: {exc}"
             self._restore_office_window()
 
     def _restore_office_window(self):

@@ -75,26 +75,37 @@ def office_process_path(hwnd):
 def find_office_window(path, program):
     import win32gui
 
-    # Word may display the filename with or without the extension.
-    names = sorted({path.name.casefold(), path.stem.casefold()}, key=len, reverse=True)
+    # Office can collapse whitespace and hide the filename extension.
+    def normalize(value):
+        return " ".join(value.split()).casefold()
+
+    names = {normalize(path.name), normalize(path.stem)}
     matches = []
+    rejected = []
 
     def collect(hwnd, _):
         if not win32gui.IsWindowVisible(hwnd):
             return True
-        title = win32gui.GetWindowText(hwnd).strip().casefold()
+        title = normalize(win32gui.GetWindowText(hwnd))
         if any(title == name or title.startswith(tuple(name + sep for sep in
                (" - ", " – ", " — ", " [", " (", " • "))) for name in names):
             try:
-                if office_process_path(hwnd) == program:
+                executable = office_process_path(hwnd)
+                if os.path.samefile(executable, program):
                     matches.append(hwnd)
-            except Exception:
-                pass
+                else:
+                    rejected.append("Cửa sổ cùng tên thuộc chương trình khác.")
+            except Exception as exc:
+                rejected.append(f"Không xác minh được tiến trình Office: {exc}")
         return True
 
     win32gui.EnumWindows(collect, None)
     # A title alone cannot disambiguate documents with the same name.
-    return matches[0] if len(matches) == 1 else 0
+    if len(matches) > 1:
+        raise RuntimeError("Có nhiều cửa sổ Office cùng tên. Hãy đóng các tệp trùng tên rồi thử lại.")
+    if not matches and rejected:
+        raise RuntimeError(rejected[0])
+    return matches[0] if matches else 0
 
 
 def verify_com_registration(prog_id, program):
@@ -188,7 +199,7 @@ def _activate_document(path, program, *, printing):
             hwnd = 0
         except (AttributeError, com_error, OSError):
             continue
-    if hwnd and office_process_path(hwnd) != program:
+    if hwnd and not os.path.samefile(office_process_path(hwnd), program):
         raise RuntimeError("Cửa sổ tài liệu không thuộc Microsoft Office đã chọn.")
     if hwnd:
         if win32gui.IsIconic(hwnd):
@@ -226,15 +237,18 @@ class OfficeWindow:
         import win32gui
 
         if not win32gui.IsWindow(self.hwnd) or self._identity() != self.identity:
-            return
+            raise RuntimeError("Cửa sổ Office đã thay đổi hoặc đã đóng.")
         if win32gui.IsIconic(self.hwnd) or win32gui.IsZoomed(self.hwnd):
             win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
-        flags = win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE
+        flags = win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW
         style = self.style & ~win32con.WS_CAPTION if hide_title else self.style
         if win32gui.GetWindowLong(self.hwnd, win32con.GWL_STYLE) != style:
             win32gui.SetWindowLong(self.hwnd, win32con.GWL_STYLE, style)
             flags |= win32con.SWP_FRAMECHANGED
-        win32gui.SetWindowPos(self.hwnd, 0, x, y, width, height, flags)
+        win32gui.SetWindowPos(self.hwnd, win32con.HWND_TOP, x, y, width, height, flags)
+        left, top, right, bottom = win32gui.GetWindowRect(self.hwnd)
+        if max(abs(left - x), abs(top - y), abs(right - x - width), abs(bottom - y - height)) > 12:
+            raise RuntimeError("Word không nhận đúng kích thước vùng tài liệu.")
 
     def restore(self):
         import win32con
