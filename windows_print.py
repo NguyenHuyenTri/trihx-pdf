@@ -91,7 +91,8 @@ def send_pdf(name, mode, document, pages, actual_size, *, image_dpi=None):
             render = getattr(raw, "FPDF_RenderPage", None)
             if render is None:
                 # The Windows wheel exports this function but its generated binding omits it.
-                render = raw._libs["pdfium"]["FPDF_RenderPage"]
+                from pypdfium2_raw import bindings
+                render = bindings._libs["pdfium"]["FPDF_RenderPage"]
                 render.argtypes = [ctypes.c_void_p, raw.FPDF_PAGE, *([ctypes.c_int] * 6)]
                 render.restype = None
         job_id = win32print.StartDoc(dc, ("TRIHX Office", None, None, 0))
