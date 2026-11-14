@@ -3,6 +3,7 @@ name: Build Windows EXE
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags:
       - "v*"
 
@@ -27,3 +28,20 @@ jobs:
         with:
           name: HX-PDF-Windows-x64
           path: dist/HX PDF.exe
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $compiler = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          $path = if ($compiler) { $compiler.Source } else { Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe' }
+          if (-not (Test-Path $path)) {
+            choco install innosetup --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot install Inno Setup' }
+          }
+          & $path TRIHXOffice.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot build installer' }
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: TRIHX-Office-Setup-Windows-x64
+          path: dist/TRIHX Office Setup.exe
+          if-no-files-found: error

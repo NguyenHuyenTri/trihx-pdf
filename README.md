@@ -1,23 +1,17 @@
-# TRIHX PDF (TRÍ HOÀ XUÂN PDF READER)
+# TRIHX Office
 
-Ứng dụng đọc PDF trên Windows. Tài liệu được xử lý trực tiếp trên máy tính.
+Ứng dụng Windows 10/11 x64 quản lý PDF, Word, Excel và PowerPoint theo tab. PDF được đọc và in trực tiếp. Tệp Office dùng Microsoft Office desktop đã cài để sửa và lưu bản gốc. Đóng tab TRIHX Office không đóng tài liệu trong Microsoft Office.
 
-## Tính năng
+## Cài đặt
 
-- Mở PDF bằng hộp thoại hoặc kéo thả tệp vào cửa sổ.
-- Chọn chữ trên trang và sao chép bằng nút **Sao chép** hoặc `Ctrl+C`.
-- Cuộn dọc liên tục qua các trang; có điều hướng trang, thu phóng và vừa trang.
-- Tìm văn bản và tự cuộn đến từng kết quả, đánh dấu vị trí khớp.
-- Mở tệp PDF qua **Open with → HX PDF** sau lần đầu chạy ứng dụng.
-- In với cấu hình máy in, khổ giấy, hướng giấy, màu và số bản.
-- Hiển thị chú thích và trường biểu mẫu PDF khi có thể.
+Trong GitHub Actions, mở lần chạy thành công của **Build Windows EXE** và tải artifact **TRIHX-Office-Setup-Windows-x64**. Giải nén artifact để lấy `TRIHX Office Setup.exe`. Bộ cài tạo lối tắt Start và Desktop, có mục gỡ cài đặt và đăng ký **Open with** cho PDF. Windows tự quản lý lựa chọn ứng dụng mặc định.
 
-## Cài đặt lần đầu
+Nếu đang dùng bản mã nguồn, đóng ứng dụng và chạy lại `capnhat.bat` để tạo `dist\HX PDF.exe`. Máy người dùng cài từ Setup không cần Python hoặc Git.
 
-Cài Python, tải mã nguồn ZIP từ repo GitHub và giải nén vào một thư mục trên máy. Nhấp đúp `capnhat.bat`. Tệp này tải bản mới nhất, cài thư viện và tạo `dist\HX PDF.exe`.
+## Đọc và in
 
-## Cập nhật sau này
-
-Nhấp đúp `capnhat.bat` trong thư mục dự án. Tệp sẽ tự tải mã mới nhất từ GitHub và tạo lại `dist\HX PDF.exe`. Không cần cài Git.
-
-Repo: https://github.com/NguyenHuyenTri/trihx-pdf
+- PDF cuộn liên tục, tìm và sao chép chữ, `Ctrl` + lăn chuột để thu phóng. Menu **Vừa trang** cũng có **Vừa chiều rộng** và **100%**.
+- **Chữ ký số** báo kết quả kiểm tra ngoại tuyến độc lập với hình chữ ký hoặc con dấu trên trang.
+- **Print** mở bản xem trước, có phạm vi trang, lọc chẵn/lẻ, số bản, khổ giấy, hướng giấy, tỷ lệ và hai mặt theo driver. Có thể in hai mặt thủ công sau khi thử hướng nạp giấy.
+- **Hỗ trợ in** mở hàng đợi, gửi trang kiểm tra, sao chép chẩn đoán và thử lại dạng ảnh sau khi xác nhận.
+- Tab Office chuyển tới cửa sổ Microsoft Office thật. Mục **Cửa sổ Office** cho thử ẩn tiêu đề và khôi phục cửa sổ. Khả năng căn cửa sổ và ẩn tiêu đề phụ thuộc phiên bản Office và cấu hình Windows.

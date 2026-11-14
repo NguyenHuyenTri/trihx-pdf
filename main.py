@@ -3,12 +3,14 @@ from __future__ import annotations
 import sys
 import json
 from datetime import datetime
+from math import ceil
 from pathlib import Path
 
 import pypdfium2 as pdfium
-from PySide6.QtCore import Qt, QSize, QTimer, QSettings, QPoint
-from PySide6.QtGui import QAction, QColor, QIcon, QImage, QIntValidator, QKeySequence, QPainter, QPixmap, QShortcut
-from PySide6.QtPrintSupport import QPrintPreviewDialog, QPrinter
+from PySide6.QtCore import Qt, QSize, QTimer, QSettings, QPoint, QEvent
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QIntValidator, QKeySequence, QPainter, QPixmap, QShortcut
+from office_bridge import DOCUMENT_TYPES, FILE_FILTER, OFFICE_TYPES, OfficeWindow, show_office
+from print_dialog import PdfPrintDialog
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QLayout,
     QLineEdit,
     QMainWindow,
     QMenu,
@@ -33,7 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 
-APP_NAME = "HX PDF"
+APP_NAME = "TRIHX Office"
 RENDER_SCALE = 1.35
 MIN_ZOOM_PERCENT = 25
 MAX_ZOOM_PERCENT = 400
@@ -46,7 +49,7 @@ def resource_path(name: str) -> Path:
 
 
 class PdfPageLabel(QLabel):
-    def __init__(self, page, image: QImage, scale: float, on_focus) -> None:
+    def __init__(self, page, scale: float, on_focus) -> None:
         super().__init__()
         self.pdf_page = page
         self.scale = scale
@@ -61,8 +64,7 @@ class PdfPageLabel(QLabel):
         self._dragging = False
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background: white; border: 1px solid #d6dde7;")
-        self.setPixmap(QPixmap.fromImage(image))
-        self.setFixedSize(image.size())
+        self.setFixedSize(ceil(page.get_width() * scale), ceil(page.get_height() * scale))
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._copy_shortcuts = []
         for key in (QKeySequence.StandardKey.Copy, QKeySequence.StandardKey.Cut):
@@ -128,6 +130,18 @@ class PdfPageLabel(QLabel):
             painter.drawRoundedRect(x - 1, y, width + 2, height, 2.5, 2.5)
 
     def paintEvent(self, event) -> None:
+        if self.pixmap().isNull() and self.pdf_page.raw is not None and not self.text():
+            try:
+                bitmap = self.pdf_page.render(scale=self.scale, draw_annots=True, may_draw_forms=True)
+                try:
+                    image = bitmap.to_pil().convert("RGB")
+                    pixels = QImage(image.tobytes(), image.width, image.height,
+                                    image.width * 3, QImage.Format.Format_RGB888).copy()
+                    self.setPixmap(QPixmap.fromImage(pixels))
+                finally:
+                    bitmap.close()
+            except Exception:
+                self.setText("Không thể hiển thị trang này.")
         super().paintEvent(event)
         if not self.search_matches and self.selection_start is None:
             return
@@ -225,11 +239,13 @@ class PdfReaderWindow(QMainWindow):
         self.open_tabs: dict[str, dict] = {}
         self.active_tab_key: str | None = None
         self._tab_change_blocked = False
+        self.office_window = None
         self.settings = QSettings("TRIHX", "HX PDF")
         self.recent_files: list[dict[str, str | float]] = self._load_recent_files()
         self._build_ui()
         self._build_actions()
         self._set_empty_state()
+        self._update_document_controls()
 
     def _build_ui(self) -> None:
         self.setStyleSheet("""
@@ -249,37 +265,22 @@ class PdfReaderWindow(QMainWindow):
         file_toolbar.setFloatable(False)
         self.addToolBar(file_toolbar)
 
-        self.file_menu_button = QToolButton()
-        self.file_menu_button.setText("☰ File")
-        self.file_menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.file_menu = QMenu(self.file_menu_button)
-        file_open_action = self.file_menu.addAction("Open")
-        file_open_action.triggered.connect(self.open_dialog)
-        file_recent_action = self.file_menu.addAction("Recent")
-        file_recent_action.triggered.connect(self._show_recent_popup)
-        file_print_action = self.file_menu.addAction("In")
-        file_print_action.triggered.connect(self.print_document)
-        self.file_menu_button.setMenu(self.file_menu)
-        file_toolbar.addWidget(self.file_menu_button)
-        file_toolbar.addSeparator()
-
         open_button = QPushButton("Open")
         open_button.clicked.connect(self.open_dialog)
         file_toolbar.addWidget(open_button)
         self.recent_button = QPushButton("Recent")
         self.recent_button.clicked.connect(self._show_recent_popup)
         file_toolbar.addWidget(self.recent_button)
-        self.print_button = QPushButton("In")
+        self.print_button = QPushButton("Print")
         self.print_button.clicked.connect(self.print_document)
         file_toolbar.addWidget(self.print_button)
 
-        toolbar = QToolBar("Điều khiển tài liệu")
-        toolbar.setMovable(False)
-        toolbar.setFloatable(False)
-        self.addToolBar(toolbar)
+        toolbar = file_toolbar
+        before_pdf = len(toolbar.actions())
+        toolbar.addSeparator()
 
         self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText("Tìm trong tài liệu")
+        self.search_box.setPlaceholderText("Tìm trong PDF")
         self.search_box.setFixedWidth(220)
         self.search_box.returnPressed.connect(self.search_next)
         self.search_box.textChanged.connect(self._on_search_text_changed)
@@ -336,9 +337,31 @@ class PdfReaderWindow(QMainWindow):
         zoom_in.setToolTip("Phóng to")
         zoom_in.clicked.connect(lambda: self.change_zoom(10))
         toolbar.addWidget(zoom_in)
-        fit_button = QPushButton("Vừa trang")
+        fit_button = QToolButton()
+        fit_button.setText("Vừa trang")
+        fit_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         fit_button.clicked.connect(self.fit_page)
+        fit_menu = QMenu(fit_button)
+        fit_menu.addAction("Vừa trang", self.fit_page)
+        fit_menu.addAction("Vừa chiều rộng", lambda: self.fit_page(width_only=True))
+        fit_menu.addAction("100%", lambda: self.set_zoom(RENDER_SCALE))
+        fit_button.setMenu(fit_menu)
         toolbar.addWidget(fit_button)
+        self.pdf_actions = toolbar.actions()[before_pdf:]
+        self.signature_action = toolbar.addAction("Chữ ký số")
+        self.signature_action.triggered.connect(self.verify_signatures)
+        self.pdf_actions.append(self.signature_action)
+        self.office_options = QToolButton()
+        self.office_options.setText("Cửa sổ Office")
+        self.office_options.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        options = QMenu(self.office_options)
+        self.hide_caption = options.addAction("Thử ẩn thanh tiêu đề Office")
+        self.hide_caption.setCheckable(True)
+        self.hide_caption.setChecked(self.settings.value("hideOfficeCaption", False, type=bool))
+        self.hide_caption.toggled.connect(self._set_office_caption)
+        options.addAction("Khôi phục cửa sổ Office", self._restore_office_window)
+        self.office_options.setMenu(options)
+        self.office_toolbar_action = toolbar.addWidget(self.office_options)
 
         self.tab_bar = QTabBar()
         self.tab_bar.setTabsClosable(True)
@@ -350,14 +373,14 @@ class PdfReaderWindow(QMainWindow):
         self.tab_bar.currentChanged.connect(self._on_tab_changed)
         self.tab_bar.tabCloseRequested.connect(self.close_tab)
         self.app_home_button = QToolButton()
-        self.app_home_button.setText("HX PDF")
+        self.app_home_button.setText(APP_NAME)
         self.app_home_button.setIcon(QIcon(str(resource_path("app_icon.png"))))
         self.app_home_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.app_home_button.setToolTip("HX PDF — xem các tệp gần đây")
+        self.app_home_button.setToolTip("Tệp gần đây")
         self.app_home_button.clicked.connect(self._show_recent_popup)
         self.add_tab_button = QToolButton()
         self.add_tab_button.setText("+")
-        self.add_tab_button.setToolTip("Mở thêm PDF trong tab mới")
+        self.add_tab_button.setToolTip("Mở thêm tài liệu trong tab mới")
         self.add_tab_button.clicked.connect(self.open_dialog)
         self.document_tabs_toolbar = QToolBar("Các tài liệu đang mở")
         self.document_tabs_toolbar.setMovable(False)
@@ -366,6 +389,8 @@ class PdfReaderWindow(QMainWindow):
         self.document_tabs_toolbar.addWidget(self.tab_bar)
         self.document_tabs_toolbar.addWidget(self.add_tab_button)
         self.insertToolBar(file_toolbar, self.document_tabs_toolbar)
+        self.insertToolBarBreak(file_toolbar)
+        self.file_toolbar = file_toolbar
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -375,7 +400,10 @@ class PdfReaderWindow(QMainWindow):
         self.pages_layout = QVBoxLayout(self.pages_widget)
         self.pages_layout.setContentsMargins(20, 20, 20, 20)
         self.pages_layout.setSpacing(18)
+        self.pages_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         self.scroll.setWidget(self.pages_widget)
+        self.scroll.viewport().installEventFilter(self)
+        self.scroll.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.scroll.verticalScrollBar().valueChanged.connect(self._sync_page_from_scroll)
 
         self.recent_popup = QDialog(self, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
@@ -393,6 +421,10 @@ class PdfReaderWindow(QMainWindow):
         refresh_recent.setToolTip("Làm mới danh sách gần đây")
         refresh_recent.clicked.connect(self._refresh_recent_list)
         recent_header.addWidget(refresh_recent)
+        close_recent = QToolButton()
+        close_recent.setText("×")
+        close_recent.clicked.connect(self.recent_popup.hide)
+        recent_header.addWidget(close_recent)
         recent_layout.addLayout(recent_header)
         self.recent_list = QListWidget()
         self.recent_list.setStyleSheet("QListWidget { border: 0; } QListWidget::item { border-bottom: 1px solid #edf0f4; }")
@@ -437,7 +469,7 @@ class PdfReaderWindow(QMainWindow):
         if not hasattr(self, "recent_list"):
             return
         self.recent_list.clear()
-        icon = QIcon(str(resource_path("app_icon.png")))
+
         for entry in self.recent_files:
             path_value = str(entry.get("path", "")).strip()
             if not path_value:
@@ -464,7 +496,7 @@ class PdfReaderWindow(QMainWindow):
             row_layout.setContentsMargins(6, 4, 6, 4)
             row_layout.setSpacing(8)
             icon_label = QLabel()
-            icon_label.setPixmap(icon.pixmap(28, 28))
+            icon_label.setPixmap(self._file_icon(path).pixmap(28, 28))
             icon_label.setFixedSize(30, 34)
             row_layout.addWidget(icon_label)
             details = QVBoxLayout()
@@ -473,6 +505,7 @@ class PdfReaderWindow(QMainWindow):
             title_line = QHBoxLayout()
             title_line.setContentsMargins(0, 0, 0, 0)
             name_label = QLabel(path.name)
+            name_label.setTextFormat(Qt.TextFormat.PlainText)
             name_label.setStyleSheet("color: #34445a; font-size: 12px; border: none;")
             name_label.setToolTip(str(path))
             title_line.addWidget(name_label, 1)
@@ -481,6 +514,7 @@ class PdfReaderWindow(QMainWindow):
             title_line.addWidget(time_text)
             details.addLayout(title_line)
             folder_label = QLabel(str(path.parent))
+            folder_label.setTextFormat(Qt.TextFormat.PlainText)
             folder_label.setStyleSheet("color: #8190a3; font-size: 10px; border: none;")
             folder_label.setToolTip(str(path.parent))
             details.addWidget(folder_label)
@@ -497,7 +531,7 @@ class PdfReaderWindow(QMainWindow):
         screen = self.screen().availableGeometry()
         width = min(720, screen.width() - 20)
         height = min(600, screen.height() - 40)
-        origin = self.mapToGlobal(QPoint(8, self.document_tabs_toolbar.height() + 48))
+        origin = self.file_toolbar.mapToGlobal(QPoint(8, self.file_toolbar.height() + 4))
         x = min(max(origin.x(), screen.left() + 10), screen.right() - width - 10)
         y = min(max(origin.y(), screen.top() + 10), screen.bottom() - height - 10)
         self.recent_popup.resize(width, height)
@@ -537,9 +571,9 @@ class PdfReaderWindow(QMainWindow):
             self.addAction(action)
 
     def _set_empty_state(self) -> None:
-        self.empty_label = QLabel("Kéo thả tệp PDF vào cửa sổ hoặc bấm ‘Mở PDF’ để bắt đầu")
+        self.empty_label = QLabel("Kéo thả tài liệu vào cửa sổ hoặc bấm Open để bắt đầu")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.empty_label.setMinimumSize(QSize(720, 520))
+        self.empty_label.setMinimumSize(QSize(340, 260))
         self.empty_label.setStyleSheet("background:#ffffff; color:#617188; font-size:18px; border:1px solid #d6dde7; border-radius:10px;")
         self.pages_layout.addWidget(self.empty_label, alignment=Qt.AlignmentFlag.AlignCenter)
         self.statusBar().showMessage("Tệp được mở trực tiếp trên máy tính.")
@@ -553,23 +587,34 @@ class PdfReaderWindow(QMainWindow):
     def dropEvent(self, event) -> None:
         for url in event.mimeData().urls():
             candidate = Path(url.toLocalFile())
-            if candidate.suffix.lower() == ".pdf":
+            if candidate.suffix.lower() in DOCUMENT_TYPES:
                 self.open_file(candidate)
 
     def open_dialog(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(self, "Mở tài liệu PDF", "", "Tài liệu PDF (*.pdf)")
+        paths, _ = QFileDialog.getOpenFileNames(self, "Mở tài liệu", "", FILE_FILTER)
         for path in paths:
             self.open_file(Path(path))
 
     def open_file(self, path: Path) -> None:
         path = path.expanduser().resolve()
+        suffix = path.suffix.lower()
+        if suffix not in DOCUMENT_TYPES or not path.is_file():
+            QMessageBox.warning(self, "Không mở được tệp", "Hãy chọn tệp PDF, Word, Excel hoặc PowerPoint có sẵn.")
+            return
         tab_key = str(path).casefold()
         if tab_key in self.open_tabs:
             self._record_recent_file(path)
             for index in range(self.tab_bar.count()):
                 if self.tab_bar.tabData(index) == tab_key:
-                    self.tab_bar.setCurrentIndex(index)
+                    if self.tab_bar.currentIndex() == index and suffix in OFFICE_TYPES:
+                        self._open_office(path)
+                    else:
+                        self.tab_bar.setCurrentIndex(index)
                     break
+            return
+
+        if suffix in OFFICE_TYPES:
+            self._add_document_tab(tab_key, path, None)
             return
 
         try:
@@ -596,11 +641,14 @@ class PdfReaderWindow(QMainWindow):
                 QMessageBox.critical(self, "Không mở được PDF", f"Mật khẩu không đúng hoặc tệp bị lỗi.\n\nChi tiết: {password_exc}")
                 return
 
+        self._add_document_tab(tab_key, path, new_document)
+
+    def _add_document_tab(self, tab_key, path, document):
         self._record_recent_file(path)
         self._save_active_tab_state()
         self.open_tabs[tab_key] = {
             "path": path,
-            "document": new_document,
+            "document": document,
             "page_index": 0,
             "zoom": RENDER_SCALE,
             "page_text": {},
@@ -610,7 +658,7 @@ class PdfReaderWindow(QMainWindow):
             "search_text": "",
         }
         self._tab_change_blocked = True
-        index = self.tab_bar.addTab(QIcon(str(resource_path("app_icon.png"))), path.name)
+        index = self.tab_bar.addTab(self._file_icon(path), path.name)
         self.tab_bar.setTabData(index, tab_key)
         self.tab_bar.setTabToolTip(index, str(path))
         self.tab_bar.setCurrentIndex(index)
@@ -642,14 +690,24 @@ class PdfReaderWindow(QMainWindow):
     def _activate_tab(self, tab_key: str, save_previous: bool = True) -> None:
         if tab_key not in self.open_tabs:
             return
+        self._restore_office_window()
         if save_previous:
             self._save_active_tab_state()
-        if self.active_tab_key != tab_key:
-            self._clear_page_widgets()
+        self._clear_page_widgets()
         state = self.open_tabs[tab_key]
         self.active_tab_key = tab_key
         self.file_path = state["path"]
         self.document = state["document"]
+        self._update_document_controls()
+        if self.document is None:
+            panel = QLabel(f"{self.file_path.name}\n\nTài liệu được chỉnh sửa và lưu trong Microsoft Office.")
+            panel.setTextFormat(Qt.TextFormat.PlainText)
+            panel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            panel.setMinimumHeight(300)
+            self.pages_layout.addWidget(panel)
+            self.statusBar().showMessage(str(self.file_path))
+            self._open_office(self.file_path)
+            return
         self.page_index = state["page_index"]
         self.zoom = state["zoom"]
         self.page_text = state["page_text"]
@@ -680,11 +738,12 @@ class PdfReaderWindow(QMainWindow):
         tab_key = str(tab_key)
         is_active = tab_key == self.active_tab_key
         if is_active:
+            self._restore_office_window()
             self._save_active_tab_state()
             self._clear_page_widgets()
             self.active_tab_key = None
         state = self.open_tabs.pop(tab_key, None)
-        if state:
+        if state and state["document"] is not None:
             state["document"].close()
         self._tab_change_blocked = True
         self.tab_bar.removeTab(index)
@@ -705,8 +764,7 @@ class PdfReaderWindow(QMainWindow):
             self.tab_bar.setCurrentIndex((self.tab_bar.currentIndex() + step) % count)
 
     def _show_no_documents(self) -> None:
-        if self.document is not None:
-            self._clear_page_widgets()
+        self._clear_page_widgets()
         self.active_tab_key = None
         self.document = None
         self.file_path = None
@@ -722,7 +780,7 @@ class PdfReaderWindow(QMainWindow):
         self.search_count_label.setText("0/0")
         self.page_prev_button.setEnabled(False)
         self.page_next_button.setEnabled(False)
-        self.print_button.setEnabled(False)
+        self._update_document_controls()
         self.setWindowTitle(APP_NAME)
         if not self.pages_layout.count():
             self._set_empty_state()
@@ -730,20 +788,19 @@ class PdfReaderWindow(QMainWindow):
     def render_page(self) -> None:
         if self.document is None:
             return
+        target = self.page_index
         self._clear_page_widgets()
         for index in range(len(self.document)):
             page = self.document[index]
-            bitmap = page.render(scale=self.zoom, rotation=0, draw_annots=True, may_draw_forms=True)
-            pil_image = bitmap.to_pil().convert("RGB")
-            raw = pil_image.tobytes("raw", "RGB")
-            image = QImage(raw, pil_image.width, pil_image.height, pil_image.width * 3, QImage.Format.Format_RGB888).copy()
-            label = PdfPageLabel(page, image, self.zoom, self._set_active_page_label)
+            label = PdfPageLabel(page, self.zoom, self._set_active_page_label)
             self.pages_layout.addWidget(label, alignment=Qt.AlignmentFlag.AlignHCenter)
             self.page_labels.append(label)
-        self.page_input.setText(str(self.page_index + 1))
+        self.pages_layout.activate()
+        self.page_input.setText(str(target + 1))
         self.zoom_input.setText(str(round(self.zoom / RENDER_SCALE * 100)))
         self._apply_search_markers()
-        QTimer.singleShot(0, lambda: self._scroll_to_page(self.page_index))
+        key = self.active_tab_key
+        QTimer.singleShot(0, lambda: self.go_to_page(target) if self.active_tab_key == key else None)
 
     def _clear_page_widgets(self) -> None:
         self.page_labels.clear()
@@ -754,6 +811,8 @@ class PdfReaderWindow(QMainWindow):
             if widget is not None:
                 if isinstance(widget, PdfPageLabel):
                     widget.close_textpage()
+                    widget.pdf_page.close()
+                widget.hide()
                 widget.deleteLater()
 
     def _set_active_page_label(self, label: PdfPageLabel) -> None:
@@ -763,10 +822,15 @@ class PdfReaderWindow(QMainWindow):
         if not self.page_labels:
             return
         index = max(0, min(index, len(self.page_labels) - 1))
-        self.scroll.verticalScrollBar().setValue(self.page_labels[index].y() - 20)
+        bar = self.scroll.verticalScrollBar()
+        self._jumping = True
+        try:
+            bar.setValue(self.page_labels[index].y() - 20)
+        finally:
+            self._jumping = False
 
     def _sync_page_from_scroll(self, value: int) -> None:
-        if not self.page_labels:
+        if not self.page_labels or getattr(self, "_jumping", False):
             return
         center = value + self.scroll.viewport().height() / 2
         index = min(
@@ -774,6 +838,12 @@ class PdfReaderWindow(QMainWindow):
             key=lambda i: abs(self.page_labels[i].geometry().center().y() - center),
         )
         self.page_index = index
+        viewport_height = self.scroll.viewport().height()
+        for label in self.page_labels:
+            if (label.y() + label.height() < value - 2 * viewport_height
+                    or label.y() > value + 3 * viewport_height):
+                if not label.pixmap().isNull():
+                    label.clear()
         self.page_input.setText(str(index + 1))
         self._update_page_buttons()
 
@@ -821,12 +891,29 @@ class PdfReaderWindow(QMainWindow):
                         min(value, RENDER_SCALE * MAX_ZOOM_PERCENT / 100.0))
         self.render_page()
 
-    def fit_page(self) -> None:
+    def fit_page(self, *, width_only=False) -> None:
         if self.document is None:
             return
-        width = self.document[self.page_index].get_width() or 595
-        available = max(400, self.scroll.viewport().width() - 40)
-        self.set_zoom(min(available / width, RENDER_SCALE * MAX_ZOOM_PERCENT / 100.0))
+        page = self.document[self.page_index]
+        try:
+            width, height = page.get_size()
+        finally:
+            page.close()
+        viewport = self.scroll.viewport()
+        zoom = max(1, viewport.width() - 48) / width
+        if not width_only:
+            zoom = min(zoom, max(1, viewport.height() - 48) / height)
+        self.set_zoom(zoom)
+
+    def eventFilter(self, watched, event):
+        if (getattr(self, "scroll", None) is not None and watched is self.scroll.viewport() and event.type() == QEvent.Type.Wheel
+                and self.document is not None
+                and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            delta = event.angleDelta().y() or event.pixelDelta().y()
+            if delta:
+                self.change_zoom(10 if delta > 0 else -10)
+            return True
+        return super().eventFilter(watched, event)
 
     def copy_selected_text(self) -> None:
         label = self.active_page_label
@@ -905,10 +992,14 @@ class PdfReaderWindow(QMainWindow):
     def _show_search_result(self) -> None:
         if not self.search_results:
             return
-        page_index, _, _ = self.search_results[self.search_position]
+        page_index, start, _ = self.search_results[self.search_position]
         self.search_count_label.setText(f"{self.search_position + 1}/{len(self.search_results)}")
         self._apply_search_markers()
         self.go_to_page(page_index)
+        label = self.page_labels[page_index]
+        rect = label._char_rect(label._get_textpage(), start)
+        if rect is not None:
+            self.scroll.ensureVisible(label.x() + round(rect[0]), label.y() + round(rect[1]), 30, 60)
         self.statusBar().showMessage(
             f"Kết quả {self.search_position + 1}/{len(self.search_results)} — trang {page_index + 1}"
             " • Enter/F3: tiếp • Shift+Enter/Shift+F3: trước"
@@ -930,53 +1021,105 @@ class PdfReaderWindow(QMainWindow):
         self.search_position = (self.search_position - 1) % len(self.search_results)
         self._show_search_result()
 
-    def print_document(self) -> None:
-        if self.document is None:
-            return
-        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-        printer.setResolution(300)
-        dialog = QPrintPreviewDialog(printer, self)
-        dialog.setWindowTitle("Xem trước khi in")
-        dialog.paintRequested.connect(self._render_print_document)
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.statusBar().showMessage("Tài liệu đã được gửi tới máy in.")
+    def _update_document_controls(self):
+        for action in self.pdf_actions:
+            action.setVisible(self.document is not None)
+        self.print_button.setEnabled(self.file_path is not None)
+        self.office_toolbar_action.setVisible(self.file_path is not None and self.document is None)
 
-    def _render_print_document(self, printer: QPrinter) -> None:
-        if self.document is None:
-            return
-        first = printer.fromPage() - 1 if printer.fromPage() > 0 else 0
-        last = printer.toPage() - 1 if printer.toPage() > 0 else len(self.document) - 1
-        first = max(0, min(first, len(self.document) - 1))
-        last = max(first, min(last, len(self.document) - 1))
-        painter = QPainter()
-        if not painter.begin(printer):
-            QMessageBox.warning(self, "Không thể in", "Không mở được hàng đợi in.")
+    @staticmethod
+    def _file_icon(path):
+        _, _, letter, color = OFFICE_TYPES.get(path.suffix.lower(), ("", "", "PDF", "#cf2929"))
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        with QPainter(pixmap) as painter:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(color))
+            painter.drawRoundedRect(0, 0, 32, 32, 5, 5)
+            painter.setPen(Qt.GlobalColor.white)
+            painter.setFont(QFont("Segoe UI", 9 if letter == "PDF" else 15, QFont.Weight.Bold))
+            painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, letter)
+        return QIcon(pixmap)
+
+    def _open_office(self, path, *, printing=False):
+        try:
+            hwnd = show_office(path, printing=printing)
+            if hwnd and not printing:
+                if self.office_window is None or self.office_window.hwnd != hwnd:
+                    self._restore_office_window()
+                    self.office_window = OfficeWindow(hwnd)
+                self._align_office_window()
+            self._record_recent_file(path)
+        except Exception:
+            QMessageBox.warning(self, "Microsoft Office",
+                                "Không mở được thao tác trong Microsoft Office. "
+                                "Kiểm tra ứng dụng Office tương ứng hoặc mở tệp trực tiếp từ File Explorer.")
+
+    def _set_office_caption(self, hidden):
+        self.settings.setValue("hideOfficeCaption", hidden)
+        self._align_office_window()
+
+    def _align_office_window(self):
+        if getattr(self, "office_window", None) is None or self.isMinimized():
             return
         try:
-            for index in range(first, last + 1):
-                if index > first:
-                    printer.newPage()
-                pdf_page = self.document[index]
-                dpi = printer.resolution()
-                bitmap = pdf_page.render(scale=dpi / 72.0, rotation=0, draw_annots=True, may_draw_forms=True)
-                pil_image = bitmap.to_pil().convert("RGB")
-                raw = pil_image.tobytes("raw", "RGB")
-                qimage = QImage(raw, pil_image.width, pil_image.height, pil_image.width * 3, QImage.Format.Format_RGB888).copy()
-                target = printer.pageRect(QPrinter.Unit.DevicePixel)
-                scaled = qimage.scaled(int(target.width()), int(target.height()), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                x = int(target.x() + (target.width() - scaled.width()) / 2)
-                y = int(target.y() + (target.height() - scaled.height()) / 2)
-                painter.drawImage(x, y, scaled)
+            from ctypes import byref, c_void_p, windll
+            from ctypes.wintypes import POINT, RECT
+
+            # Native client coordinates account for the monitor's DPI.
+            hwnd = c_void_p(int(self.scroll.winId()))
+            origin, size = POINT(), RECT()
+            if windll.user32.GetClientRect(hwnd, byref(size)) and windll.user32.ClientToScreen(hwnd, byref(origin)):
+                self.office_window.move(origin.x, origin.y, size.right, size.bottom,
+                                        hide_title=self.hide_caption.isChecked())
+        except Exception:
+            self._restore_office_window()
+
+    def _restore_office_window(self):
+        window, self.office_window = self.office_window, None
+        if window is not None:
+            try:
+                window.restore()
+            except Exception:
+                pass
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._align_office_window)
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        QTimer.singleShot(0, self._align_office_window)
+
+    def verify_signatures(self):
+        if self.file_path is None or self.document is None:
+            return
+        try:
+            from signatures import signature_report
+            report = signature_report(self.file_path)
         except Exception as exc:
-            QMessageBox.critical(self, "Lỗi khi in", str(exc))
-        finally:
-            painter.end()
+            report = f"Không xác minh được chữ ký số trong tệp này.\n{exc}"
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Chữ ký số")
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        dialog.setText(report)
+        dialog.exec()
+
+    def print_document(self) -> None:
+        if self.document is not None:
+            dialog = PdfPrintDialog(self.document, self.page_index, self.settings, self)
+            dialog.exec()
+        elif self.file_path is not None:
+            self._open_office(self.file_path, printing=True)
 
     def closeEvent(self, event) -> None:
+        self._restore_office_window()
         self._clear_page_widgets()
         for state in self.open_tabs.values():
             try:
-                state["document"].close()
+                if state["document"] is not None:
+                    state["document"].close()
             except Exception:
                 pass
         self.open_tabs.clear()
@@ -996,7 +1139,7 @@ def register_pdf_open_with() -> None:
     command = f'"{exe_path}" "%1"'
 
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, app_key) as key:
-        winreg.SetValueEx(key, "FriendlyAppName", 0, winreg.REG_SZ, "HX PDF")
+        winreg.SetValueEx(key, "FriendlyAppName", 0, winreg.REG_SZ, APP_NAME)
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, app_key + r"\SupportedTypes") as key:
         winreg.SetValueEx(key, ".pdf", 0, winreg.REG_SZ, "")
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, app_key + r"\shell\open\command") as key:
@@ -1020,7 +1163,10 @@ def register_pdf_open_with() -> None:
 
 def main() -> int:
     input_files = list(sys.argv[1:])
-    register_pdf_open_with()
+    try:
+        register_pdf_open_with()
+    except OSError:
+        pass
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setWindowIcon(QIcon(str(resource_path("app_icon.png"))))
@@ -1029,7 +1175,7 @@ def main() -> int:
     candidates = [
         Path(argument.strip('"'))
         for argument in input_files
-        if Path(argument.strip('"')).suffix.lower() == ".pdf" and Path(argument.strip('"')).is_file()
+        if Path(argument.strip('"')).suffix.lower() in DOCUMENT_TYPES and Path(argument.strip('"')).is_file()
     ]
     if candidates:
         QTimer.singleShot(0, lambda paths=candidates: [window.open_file(path) for path in paths])
