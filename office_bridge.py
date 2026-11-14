@@ -51,15 +51,50 @@ def native_office_program(application):
 
 
 def office_process_path(hwnd):
+    import ctypes
+    from ctypes import wintypes
     import win32api
     import win32process
 
     _, pid = win32process.GetWindowThreadProcessId(hwnd)
-    process = win32api.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    process = win32api.OpenProcess(0x1000, False, pid)
     try:
-        return Path(win32process.QueryFullProcessImageName(process, 0)).resolve()
+        query = ctypes.windll.kernel32.QueryFullProcessImageNameW
+        query.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                          ctypes.POINTER(wintypes.DWORD)]
+        query.restype = wintypes.BOOL
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = wintypes.DWORD(len(buffer))
+        if not query(int(process), 0, buffer, ctypes.byref(length)):
+            raise ctypes.WinError()
+        return Path(buffer.value).resolve()
     finally:
         process.Close()
+
+
+def find_office_window(path, program):
+    import win32gui
+
+    # Word may display the filename with or without the extension.
+    names = sorted({path.name.casefold(), path.stem.casefold()}, key=len, reverse=True)
+    matches = []
+
+    def collect(hwnd, _):
+        if not win32gui.IsWindowVisible(hwnd):
+            return True
+        title = win32gui.GetWindowText(hwnd).strip().casefold()
+        if any(title == name or title.startswith(tuple(name + sep for sep in
+               (" - ", " – ", " — ", " [", " (", " • "))) for name in names):
+            try:
+                if office_process_path(hwnd) == program:
+                    matches.append(hwnd)
+            except Exception:
+                pass
+        return True
+
+    win32gui.EnumWindows(collect, None)
+    # A title alone cannot disambiguate documents with the same name.
+    return matches[0] if len(matches) == 1 else 0
 
 
 def verify_com_registration(prog_id, program):
@@ -90,12 +125,13 @@ def show_office(path: Path, *, printing=False):
     application = OFFICE_TYPES[path.suffix.lower()][0]
     program = native_office_program(application)
     try:
-        return _activate_document(path, program, printing=printing)
+        hwnd = _activate_document(path, program, printing=printing)
+        return hwnd, program
     except Exception:
         if printing:
             raise
         subprocess.Popen([str(program), str(path)])
-        return 0
+        return 0, program
 
 
 def _activate_document(path, program, *, printing):
@@ -139,11 +175,17 @@ def _activate_document(path, program, *, printing):
         document.Windows(1).Activate()
 
     hwnd = 0
-    for owner in (app.ActiveWindow, app):
+    owners = [app]
+    try:
+        owners.insert(0, app.ActiveWindow)
+    except (AttributeError, com_error):
+        pass
+    for owner in owners:
         try:
             hwnd = win32gui.GetAncestor(int(owner.Hwnd), 2)
-            if win32gui.IsWindow(hwnd):
+            if hwnd and win32gui.IsWindow(hwnd):
                 break
+            hwnd = 0
         except (AttributeError, com_error, OSError):
             continue
     if hwnd and office_process_path(hwnd) != program:

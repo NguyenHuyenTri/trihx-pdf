@@ -9,7 +9,7 @@ from pathlib import Path
 import pypdfium2 as pdfium
 from PySide6.QtCore import Qt, QSize, QTimer, QSettings, QPoint, QEvent
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QIntValidator, QKeySequence, QPainter, QPen, QPixmap, QShortcut
-from office_bridge import DOCUMENT_TYPES, FILE_FILTER, OFFICE_TYPES, OfficeWindow, show_office
+from office_bridge import DOCUMENT_TYPES, FILE_FILTER, OFFICE_TYPES, OfficeWindow, find_office_window, show_office
 from print_dialog import PdfPrintDialog
 from PySide6.QtWidgets import (
     QApplication,
@@ -708,6 +708,7 @@ class PdfReaderWindow(QMainWindow):
     def _activate_tab(self, tab_key: str, save_previous: bool = True) -> None:
         if tab_key not in self.open_tabs:
             return
+        self._office_open_token = None
         self._restore_office_window()
         if save_previous:
             self._save_active_tab_state()
@@ -765,6 +766,7 @@ class PdfReaderWindow(QMainWindow):
         tab_key = str(tab_key)
         is_active = tab_key == self.active_tab_key
         if is_active:
+            self._office_open_token = None
             self._restore_office_window()
             self._save_active_tab_state()
             self._clear_page_widgets()
@@ -1103,18 +1105,35 @@ class PdfReaderWindow(QMainWindow):
 
     def _open_office(self, path, *, printing=False):
         try:
-            hwnd = show_office(path, printing=printing)
-            if hwnd and not printing:
-                if self.office_window is None or self.office_window.hwnd != hwnd:
-                    self._restore_office_window()
-                    self.office_window = OfficeWindow(hwnd)
-                self._align_office_window()
-            elif not printing:
-                self.statusBar().showMessage("Đã gửi tệp tới Microsoft Office. Kiểm tra cửa sổ Office trên thanh tác vụ.")
+            hwnd, program = show_office(path, printing=printing)
+            if not printing:
+                self._office_open_token = object()
+                self._attach_office_when_ready(path, program, self._office_open_token, hwnd=hwnd)
             self._record_recent_file(path)
         except Exception as exc:
             QMessageBox.warning(self, "Microsoft Office",
                                 f"Không mở được thao tác trong Microsoft Office.\n{exc}")
+
+    def _attach_office_when_ready(self, path, program, token, *, hwnd=0, attempt=0):
+        if getattr(self, "_office_open_token", None) is not token or self.file_path != path or not self.isVisible():
+            return
+        try:
+            hwnd = hwnd or find_office_window(path, program)
+            if hwnd:
+                if self.office_window is None or self.office_window.hwnd != hwnd:
+                    self._restore_office_window()
+                    self.office_window = OfficeWindow(hwnd)
+                self._align_office_window()
+                if self.office_window is not None:
+                    self.statusBar().showMessage("Đã căn cửa sổ Microsoft Office theo vùng tài liệu.")
+                    return
+        except Exception:
+            self._restore_office_window()
+        if attempt < 39:
+            QTimer.singleShot(300, lambda: self._attach_office_when_ready(
+                path, program, token, attempt=attempt + 1))
+        else:
+            self.statusBar().showMessage("Chưa ghép được cửa sổ Office với tab. Bạn vẫn có thể dùng cửa sổ Office riêng.")
 
     def _set_office_caption(self, hidden):
         self.settings.setValue("hideOfficeCaption", hidden)
@@ -1133,6 +1152,8 @@ class PdfReaderWindow(QMainWindow):
             if windll.user32.GetClientRect(hwnd, byref(size)) and windll.user32.ClientToScreen(hwnd, byref(origin)):
                 self.office_window.move(origin.x, origin.y, size.right, size.bottom,
                                         hide_title=self.hide_caption.isChecked())
+            else:
+                raise OSError("Không lấy được kích thước vùng tài liệu.")
         except Exception:
             self._restore_office_window()
 
@@ -1174,6 +1195,7 @@ class PdfReaderWindow(QMainWindow):
             self._open_office(self.file_path, printing=True)
 
     def closeEvent(self, event) -> None:
+        self._office_open_token = None
         self._restore_office_window()
         self._clear_page_widgets()
         for state in self.open_tabs.values():
