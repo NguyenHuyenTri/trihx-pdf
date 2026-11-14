@@ -87,8 +87,13 @@ def send_pdf(name, mode, document, pages, actual_size, *, image_dpi=None):
         dpi_x, dpi_y = win32print.GetDeviceCaps(dc, 88), win32print.GetDeviceCaps(dc, 90)
         if min(width, height, dpi_x, dpi_y) <= 0:
             raise RuntimeError("Driver không cung cấp kích thước vùng in.")
-        if image_dpi is None and not hasattr(raw, "FPDF_RenderPage"):
-            raise RuntimeError("Bộ đọc PDF thiếu chế độ in Windows.")
+        if image_dpi is None:
+            render = getattr(raw, "FPDF_RenderPage", None)
+            if render is None:
+                # The Windows wheel exports this function but its generated binding omits it.
+                render = raw._libs["pdfium"]["FPDF_RenderPage"]
+                render.argtypes = [ctypes.c_void_p, raw.FPDF_PAGE, *([ctypes.c_int] * 6)]
+                render.restype = None
         job_id = win32print.StartDoc(dc, ("TRIHX Office", None, None, 0))
         if job_id <= 0:
             raise RuntimeError("Windows từ chối tạo lệnh in.")
@@ -104,18 +109,18 @@ def send_pdf(name, mode, document, pages, actual_size, *, image_dpi=None):
                 win32print.StartPage(dc)
                 hdc = dc
                 if image_dpi is None:
-                    raw.FPDF_RenderPage(hdc, page.raw, x, y, w, h, 0,
+                    render(int(hdc), page.raw, x, y, w, h, 0,
                                         raw.FPDF_ANNOT | raw.FPDF_PRINTING)
                     if document.formenv is not None:
                         # The bitmap form API draws separately from the HDC renderer.
-                        draw_form_fields(raw, hdc, document, page, x, y, w, h)
+                        draw_form_fields(raw, int(hdc), document, page, x, y, w, h)
                 else:
                     from PIL import ImageWin
 
                     bitmap = page.render(scale=image_dpi / 72, draw_annots=True,
                                          may_draw_forms=True)
                     try:
-                        ImageWin.Dib(bitmap.to_pil().convert("RGB")).draw(hdc, (x, y, x + w, y + h))
+                        ImageWin.Dib(bitmap.to_pil().convert("RGB")).draw(int(hdc), (x, y, x + w, y + h))
                     finally:
                         bitmap.close()
                 win32print.EndPage(dc)
