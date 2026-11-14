@@ -2,6 +2,7 @@
 from pathlib import Path
 import os
 import sys
+import subprocess
 
 OFFICE_TYPES = {
     ".docx": ("Word", "Documents", "W", "#2563bb"),
@@ -15,10 +16,49 @@ DOCUMENT_TYPES = {".pdf", *OFFICE_TYPES}
 FILE_FILTER = "Tài liệu (*.pdf *.docx *.doc *.xlsx *.xls *.pptx *.ppt)"
 
 
+OFFICE_EXECUTABLES = {
+    "Word": "WINWORD.EXE",
+    "Excel": "EXCEL.EXE",
+    "PowerPoint": "POWERPNT.EXE",
+}
+_office_sessions = {}
+
+
+def launch_native_office(path):
+    import winreg
+
+    application = OFFICE_TYPES[path.suffix.lower()][0]
+    executable = OFFICE_EXECUTABLES[application]
+    key_path = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{executable}"
+    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for view in (0, winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+            try:
+                with winreg.OpenKey(hive, key_path, 0, winreg.KEY_READ | view) as key:
+                    program = Path(os.path.expandvars(winreg.QueryValueEx(key, "")[0]).strip('"'))
+                if program.is_file():
+                    subprocess.Popen([str(program), str(path)])
+                    return
+            except OSError:
+                continue
+    raise RuntimeError(f"Không tìm thấy Microsoft {application} bản desktop.")
+
+
 def show_office(path: Path, *, printing=False):
     if sys.platform != "win32":
         raise RuntimeError("Cần Windows và Microsoft Office bản desktop.")
+    try:
+        return _activate_document(path, printing=printing)
+    except Exception:
+        if printing:
+            raise
+        launch_native_office(path)
+        return 0
+
+
+def _activate_document(path, *, printing):
     import win32com.client
+    import win32con
+    import win32gui
     from pywintypes import com_error
 
     app_name, collection_name, _, _ = OFFICE_TYPES[path.suffix.lower()]
@@ -27,10 +67,18 @@ def show_office(path: Path, *, printing=False):
         app = win32com.client.GetActiveObject(prog_id)
     except com_error:
         app = win32com.client.Dispatch(prog_id)
+    _office_sessions[app_name] = app
     collection = getattr(app, collection_name)
     target = os.path.normcase(str(path))
-    document = next((entry for entry in collection
-                     if os.path.normcase(str(entry.FullName)) == target), None)
+    document = None
+    for entry in collection:
+        try:
+            if os.path.normcase(str(entry.FullName)) == target:
+                document = entry
+                break
+        except com_error:
+            continue
+
     if document is None:
         prior_security = app.AutomationSecurity
         try:
@@ -38,25 +86,31 @@ def show_office(path: Path, *, printing=False):
             document = collection.Open(str(path))
         finally:
             app.AutomationSecurity = prior_security
-    app.Visible = True
-    if app_name == "Excel":
-        document.Windows(1).Activate()
-    elif app_name == "PowerPoint":
-        document.Windows(1).Activate()
-    else:
-        document.Activate()
-    hwnd = 0
-    try:
-        import win32con
-        import win32gui
 
-        window = document.Windows(1) if app_name != "PowerPoint" else app.ActiveWindow
-        hwnd = int(window.Hwnd)
+    app.Visible = True
+    if app_name == "Word":
+        document.Activate()
+    else:
+        document.Windows(1).Activate()
+
+    hwnd = 0
+    for owner in (app.ActiveWindow, app):
+        try:
+            hwnd = win32gui.GetAncestor(int(owner.Hwnd), 2)
+            if win32gui.IsWindow(hwnd):
+                break
+        except (AttributeError, com_error, OSError):
+            continue
+    if hwnd:
         if win32gui.IsIconic(hwnd):
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-        win32gui.SetForegroundWindow(hwnd)
-    except Exception:
-        pass
+        else:
+            win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+        try:
+            win32gui.BringWindowToTop(hwnd)
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception:
+            win32gui.FlashWindow(hwnd, True)
     if printing:
         app.CommandBars.ExecuteMso("PrintPreviewAndPrint")
     return hwnd

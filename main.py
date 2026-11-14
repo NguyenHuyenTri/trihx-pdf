@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 from PySide6.QtCore import Qt, QSize, QTimer, QSettings, QPoint, QEvent
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QIntValidator, QKeySequence, QPainter, QPixmap, QShortcut
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QIntValidator, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from office_bridge import DOCUMENT_TYPES, FILE_FILTER, OFFICE_TYPES, OfficeWindow, show_office
 from print_dialog import PdfPrintDialog
 from PySide6.QtWidgets import (
@@ -223,7 +223,7 @@ class PdfReaderWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.setWindowIcon(QIcon(str(resource_path("app_icon.png"))))
+        self.setWindowIcon(self._toolbar_icon("brand"))
         self.resize(1180, 820)
         self.setMinimumSize(760, 560)
         self.document = None
@@ -250,12 +250,16 @@ class PdfReaderWindow(QMainWindow):
     def _build_ui(self) -> None:
         self.setStyleSheet("""
             QMainWindow { background: #eef2f7; }
-            QToolBar { background: #ffffff; border: 0; border-bottom: 1px solid #dce3ec; spacing: 6px; padding: 8px; }
+            QToolBar { background: #e9edf5; border: 0; border-bottom: 1px solid #cbd5e3; spacing: 5px; padding: 5px 9px; }
+            QToolBar#documentTabs { background: #e1e7f2; padding: 4px 8px 0px; }
+            QPushButton#fileAction { background: transparent; border: 0; padding: 5px 10px; }
+            QPushButton#fileAction:hover { background: #d7e0ef; }
+            QToolButton#officeBrand { background: #d5deec; border: 0; font-weight: bold; padding: 5px 10px; }
             QToolButton, QPushButton { color: #26354a; background: #ffffff; border: 1px solid #d7e0eb; border-radius: 8px; padding: 7px 12px; }
             QToolButton:hover, QPushButton:hover { background: #f0f6ff; border-color: #9bbce8; }
             QLineEdit { color: #26354a; background: white; border: 1px solid #d7e0eb; border-radius: 7px; padding: 5px 4px; }
             QTabBar::tab { background: #e8edf4; color: #34445a; padding: 7px 14px; margin-right: 3px; max-width: 260px; border: 1px solid #d8e0eb; border-bottom: none; border-top-left-radius: 7px; border-top-right-radius: 7px; }
-            QTabBar::tab:selected { background: #ffffff; color: #1c2d45; }
+            QTabBar::tab:selected { background: #f8fbff; color: #14253c; border-color: #a7bedf; }
             QTabBar::tab:hover { background: #f7f9fc; }
             QStatusBar { background: #ffffff; border-top: 1px solid #dce3ec; color: #536276; }
         """)
@@ -266,12 +270,21 @@ class PdfReaderWindow(QMainWindow):
         self.addToolBar(file_toolbar)
 
         open_button = QPushButton("Open")
+        open_button.setObjectName("fileAction")
+        open_button.setIcon(self._toolbar_icon("open"))
+        open_button.setIconSize(QSize(20, 20))
         open_button.clicked.connect(self.open_dialog)
         file_toolbar.addWidget(open_button)
         self.recent_button = QPushButton("Recent")
+        self.recent_button.setObjectName("fileAction")
+        self.recent_button.setIcon(self._toolbar_icon("recent"))
+        self.recent_button.setIconSize(QSize(20, 20))
         self.recent_button.clicked.connect(self._show_recent_popup)
         file_toolbar.addWidget(self.recent_button)
         self.print_button = QPushButton("Print")
+        self.print_button.setObjectName("fileAction")
+        self.print_button.setIcon(self._toolbar_icon("print"))
+        self.print_button.setIconSize(QSize(20, 20))
         self.print_button.clicked.connect(self.print_document)
         file_toolbar.addWidget(self.print_button)
 
@@ -357,7 +370,7 @@ class PdfReaderWindow(QMainWindow):
         options = QMenu(self.office_options)
         self.hide_caption = options.addAction("Thử ẩn thanh tiêu đề Office")
         self.hide_caption.setCheckable(True)
-        self.hide_caption.setChecked(self.settings.value("hideOfficeCaption", False, type=bool))
+        self.hide_caption.setChecked(self.settings.value("hideOfficeCaption", True, type=bool))
         self.hide_caption.toggled.connect(self._set_office_caption)
         options.addAction("Khôi phục cửa sổ Office", self._restore_office_window)
         self.office_options.setMenu(options)
@@ -374,7 +387,9 @@ class PdfReaderWindow(QMainWindow):
         self.tab_bar.tabCloseRequested.connect(self.close_tab)
         self.app_home_button = QToolButton()
         self.app_home_button.setText(APP_NAME)
-        self.app_home_button.setIcon(QIcon(str(resource_path("app_icon.png"))))
+        self.app_home_button.setObjectName("officeBrand")
+        self.app_home_button.setIcon(self._toolbar_icon("brand"))
+        self.app_home_button.setIconSize(QSize(22, 22))
         self.app_home_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.app_home_button.setToolTip("Tệp gần đây")
         self.app_home_button.clicked.connect(self._show_recent_popup)
@@ -383,10 +398,12 @@ class PdfReaderWindow(QMainWindow):
         self.add_tab_button.setToolTip("Mở thêm tài liệu trong tab mới")
         self.add_tab_button.clicked.connect(self.open_dialog)
         self.document_tabs_toolbar = QToolBar("Các tài liệu đang mở")
+        self.document_tabs_toolbar.setObjectName("documentTabs")
         self.document_tabs_toolbar.setMovable(False)
         self.document_tabs_toolbar.setFloatable(False)
         self.document_tabs_toolbar.addWidget(self.app_home_button)
-        self.document_tabs_toolbar.addWidget(self.tab_bar)
+        self.tabs_toolbar_action = self.document_tabs_toolbar.addWidget(self.tab_bar)
+        self.tabs_toolbar_action.setVisible(False)
         self.document_tabs_toolbar.addWidget(self.add_tab_button)
         self.insertToolBar(file_toolbar, self.document_tabs_toolbar)
         self.insertToolBarBreak(file_toolbar)
@@ -663,6 +680,7 @@ class PdfReaderWindow(QMainWindow):
         self.tab_bar.setTabToolTip(index, str(path))
         self.tab_bar.setCurrentIndex(index)
         self._tab_change_blocked = False
+        self.tabs_toolbar_action.setVisible(True)
         self._activate_tab(tab_key, save_previous=False)
 
     def _save_active_tab_state(self) -> None:
@@ -700,13 +718,22 @@ class PdfReaderWindow(QMainWindow):
         self.document = state["document"]
         self._update_document_controls()
         if self.document is None:
-            panel = QLabel(f"{self.file_path.name}\n\nTài liệu được chỉnh sửa và lưu trong Microsoft Office.")
-            panel.setTextFormat(Qt.TextFormat.PlainText)
-            panel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            panel.setMinimumHeight(300)
+            path = self.file_path
+            panel = QWidget()
+            layout = QVBoxLayout(panel)
+            layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label = QLabel(path.name)
+            label.setTextFormat(Qt.TextFormat.PlainText)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setWordWrap(True)
+            layout.addWidget(label)
+            application = OFFICE_TYPES[path.suffix.lower()][0]
+            reopen = QPushButton(f"Mở trong Microsoft {application}")
+            reopen.clicked.connect(lambda: self._open_office(path))
+            layout.addWidget(reopen, alignment=Qt.AlignmentFlag.AlignCenter)
             self.pages_layout.addWidget(panel)
-            self.statusBar().showMessage(str(self.file_path))
-            self._open_office(self.file_path)
+            self.statusBar().showMessage(str(path))
+            QTimer.singleShot(0, lambda: self._open_office(path) if self.active_tab_key == tab_key else None)
             return
         self.page_index = state["page_index"]
         self.zoom = state["zoom"]
@@ -750,6 +777,7 @@ class PdfReaderWindow(QMainWindow):
         next_index = self.tab_bar.currentIndex()
         self._tab_change_blocked = False
         if self.tab_bar.count() == 0:
+            self.tabs_toolbar_action.setVisible(False)
             self._show_no_documents()
         elif is_active:
             self._activate_tab(str(self.tab_bar.tabData(next_index)), save_previous=False)
@@ -1042,6 +1070,37 @@ class PdfReaderWindow(QMainWindow):
             painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, letter)
         return QIcon(pixmap)
 
+    @staticmethod
+    def _toolbar_icon(kind):
+        pixmap = QPixmap(24, 24)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        with QPainter(pixmap) as painter:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QPen(QColor("#25364e"), 1.7))
+            if kind == "brand":
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor("#d9242d"))
+                painter.drawRoundedRect(1, 1, 22, 22, 4, 4)
+                painter.setPen(Qt.GlobalColor.white)
+                painter.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
+                painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "T")
+            elif kind == "open":
+                painter.drawRoundedRect(2, 7, 20, 13, 2, 2)
+                painter.drawLine(3, 7, 3, 4)
+                painter.drawLine(3, 4, 10, 4)
+                painter.drawLine(10, 4, 13, 7)
+            elif kind == "recent":
+                painter.drawEllipse(3, 3, 18, 18)
+                painter.drawLine(12, 7, 12, 12)
+                painter.drawLine(12, 12, 16, 14)
+            else:
+                painter.drawRoundedRect(2, 8, 20, 10, 2, 2)
+                painter.fillRect(6, 13, 12, 9, QColor("#e9edf5"))
+                painter.drawRect(6, 13, 12, 9)
+                painter.drawRect(6, 2, 12, 6)
+                painter.drawLine(9, 17, 15, 17)
+        return QIcon(pixmap)
+
     def _open_office(self, path, *, printing=False):
         try:
             hwnd = show_office(path, printing=printing)
@@ -1050,11 +1109,12 @@ class PdfReaderWindow(QMainWindow):
                     self._restore_office_window()
                     self.office_window = OfficeWindow(hwnd)
                 self._align_office_window()
+            elif not printing:
+                self.statusBar().showMessage("Đã gửi tệp tới Microsoft Office. Kiểm tra cửa sổ Office trên thanh tác vụ.")
             self._record_recent_file(path)
-        except Exception:
+        except Exception as exc:
             QMessageBox.warning(self, "Microsoft Office",
-                                "Không mở được thao tác trong Microsoft Office. "
-                                "Kiểm tra ứng dụng Office tương ứng hoặc mở tệp trực tiếp từ File Explorer.")
+                                f"Không mở được thao tác trong Microsoft Office.\n{exc}")
 
     def _set_office_caption(self, hidden):
         self.settings.setValue("hideOfficeCaption", hidden)
