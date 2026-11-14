@@ -238,7 +238,8 @@ class OfficeWindow:
 
         if not win32gui.IsWindow(self.hwnd) or self._identity() != self.identity:
             raise RuntimeError("Cửa sổ Office đã thay đổi hoặc đã đóng.")
-        if win32gui.IsIconic(self.hwnd) or win32gui.IsZoomed(self.hwnd):
+        show_command = win32gui.GetWindowPlacement(self.hwnd)[1]
+        if win32gui.IsIconic(self.hwnd) or show_command == win32con.SW_SHOWMAXIMIZED:
             win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
         flags = win32con.SWP_NOACTIVATE | win32con.SWP_SHOWWINDOW
         style = self.style & ~win32con.WS_CAPTION if hide_title else self.style
