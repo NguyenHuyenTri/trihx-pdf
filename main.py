@@ -1144,7 +1144,7 @@ class PdfReaderWindow(QMainWindow):
             self.statusBar().showMessage(self.office_diagnostic)
 
     def _copy_office_diagnostic(self):
-        QApplication.clipboard().setText(f"TRIHX Office · Căn cửa sổ v2\n{self.office_diagnostic}")
+        QApplication.clipboard().setText(f"TRIHX Office · Căn cửa sổ v3\n{self.office_diagnostic}")
         self.statusBar().showMessage("Đã sao chép chẩn đoán Office.")
 
     def _set_office_caption(self, hidden):
@@ -1152,9 +1152,13 @@ class PdfReaderWindow(QMainWindow):
         self._align_office_window()
 
     def _align_office_window(self):
-        if getattr(self, "office_window", None) is None or self.isMinimized():
+        if getattr(self, "office_window", None) is None:
             return
         try:
+            minimized = self.isMinimized()
+            self.office_window.follow_host_visibility(minimized)
+            if minimized:
+                return
             from ctypes import byref, c_void_p, windll
             from ctypes.wintypes import POINT, RECT
 
@@ -1177,6 +1181,14 @@ class PdfReaderWindow(QMainWindow):
                 window.restore()
             except Exception:
                 pass
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            if self.isMinimized():
+                self._align_office_window()
+            else:
+                QTimer.singleShot(0, self._align_office_window)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

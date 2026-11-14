@@ -226,6 +226,7 @@ class OfficeWindow:
         self.placement = win32gui.GetWindowPlacement(hwnd)
         self.style = win32gui.GetWindowLong(hwnd, win32con.GWL_STYLE)
         self.identity = self._identity()
+        self.hidden_with_host = False
 
     def _identity(self):
         import win32process
@@ -251,6 +252,19 @@ class OfficeWindow:
         if max(abs(left - x), abs(top - y), abs(right - x - width), abs(bottom - y - height)) > 12:
             raise RuntimeError("Word không nhận đúng kích thước vùng tài liệu.")
 
+    def follow_host_visibility(self, minimized):
+        import win32con
+        import win32gui
+
+        if not win32gui.IsWindow(self.hwnd) or self._identity() != self.identity:
+            raise RuntimeError("Cửa sổ Office đã thay đổi hoặc đã đóng.")
+        if minimized and not self.hidden_with_host and win32gui.IsWindowVisible(self.hwnd):
+            win32gui.ShowWindow(self.hwnd, win32con.SW_HIDE)
+            self.hidden_with_host = True
+        elif not minimized and self.hidden_with_host:
+            win32gui.ShowWindow(self.hwnd, win32con.SW_SHOWNOACTIVATE)
+            self.hidden_with_host = False
+
     def restore(self):
         import win32con
         import win32gui
@@ -261,3 +275,4 @@ class OfficeWindow:
                                   win32con.SWP_NOMOVE | win32con.SWP_NOSIZE |
                                   win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
             win32gui.SetWindowPlacement(self.hwnd, self.placement)
+            self.follow_host_visibility(False)
