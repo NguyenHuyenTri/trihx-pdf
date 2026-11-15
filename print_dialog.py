@@ -268,14 +268,8 @@ class PdfPrintDialog(QDialog):
         return 2 + self.flip.currentIndex() if self.duplex_supported and self.sides.currentIndex() == 1 else 1
 
     def _update_flip_control(self):
-        sides = self.sides.currentIndex()
-        manual = sides == 2
-        enabled = self.mode is not None and (manual or (sides == 1 and self.duplex_supported))
-        self.flip.setEnabled(enabled)
-        self.flip.setToolTip(
-            "Cạnh dùng để lật giấy khi nạp lại cho lượt in mặt sau."
-            if manual else "Chọn in hai mặt để thiết lập cạnh lật."
-        )
+        self.flip.setEnabled(self.mode is not None and self._duplex() != 1)
+        self.flip.setToolTip("Cạnh lật khi in hai mặt tự động.")
 
     def _configured(self):
         return configured_mode(self.printers.currentText(), self.mode, self._paper()[0],
@@ -389,9 +383,8 @@ class PdfPrintDialog(QDialog):
             return
         order, confirmed = QInputDialog.getItem(
             self, "Nạp lại giấy",
-            f"Đợi in xong. Lật giấy theo {self.flip.currentText().lower()}. "
-            "Nếu in số trang lẻ, lấy tờ chỉ có mặt trước ra trước khi nạp lại. "
-            "Đặt mặt cần in vào khay theo chiều đã in thử, rồi chọn thứ tự in mặt sau.",
+            "Đợi in xong. Nếu in số trang lẻ, lấy tờ chỉ có mặt trước ra. "
+            "Lật và nạp lại giấy theo chiều đã in thử, rồi chọn thứ tự in mặt sau.",
             ["Đảo thứ tự mặt sau", "Giữ thứ tự mặt sau"], 0, False)
         if confirmed:
             self._print(list(reversed(backs)) if order.startswith("Đảo") else backs)
