@@ -10,14 +10,14 @@ MODEL = "vie.traineddata"
 
 
 class VietnameseOCR:
-    def __init__(self, library, model):
+    def __init__(self, library, data_directory):
         pointer = ctypes.c_void_p
         string = ctypes.c_char_p
         integer = ctypes.c_int
         for name, result, args in (
             ("TessBaseAPICreate", pointer, []),
             ("TessBaseAPIDelete", None, [pointer]),
-            ("TessBaseAPIInit5", integer, [pointer, string, integer, string, integer,
+            ("TessBaseAPIInit4", integer, [pointer, string, string, integer,
                                           pointer, integer, pointer, pointer, ctypes.c_size_t, integer]),
             ("TessBaseAPISetPageSegMode", None, [pointer, integer]),
             ("TessBaseAPISetImage", None, [pointer, string, integer, integer, integer, integer]),
@@ -33,7 +33,7 @@ class VietnameseOCR:
         if not self.handle:
             raise RuntimeError("Không tạo được bộ nhận dạng chữ.")
         try:
-            if library.TessBaseAPIInit5(self.handle, model, len(model), b"vie", 1,
+            if library.TessBaseAPIInit4(self.handle, os.fsencode(data_directory), b"vie", 1,
                                         None, 0, None, None, 0, 0) != 0:
                 raise RuntimeError("Không nạp được dữ liệu OCR tiếng Việt.")
             library.TessBaseAPISetPageSegMode(self.handle, 3)
@@ -67,7 +67,7 @@ def windows_ocr(directory=None):
     directory = directory.resolve()
     with os.add_dll_directory(str(directory)):
         library = ctypes.CDLL(str(directory / WINDOWS_DLLS[0]))
-    return VietnameseOCR(library, (directory / MODEL).read_bytes())
+    return VietnameseOCR(library, directory)
 
 
 def stage_windows_ocr(directory):
@@ -76,6 +76,7 @@ def stage_windows_ocr(directory):
     from io import BytesIO
     from urllib.request import urlopen
     from zipfile import ZipFile
+    from PIL import Image, ImageDraw, ImageFont
 
     nuget = "https://api.nuget.org/v3-flatcontainer/tesseract/5.2.0/tesseract.5.2.0.nupkg"
     source = "https://raw.githubusercontent.com/tesseract-ocr"
@@ -102,5 +103,11 @@ def stage_windows_ocr(directory):
             raise RuntimeError("Dữ liệu OCR tiếng Việt tải về không đúng phiên bản.")
         (directory / name).write_bytes(content)
     engine = windows_ocr(directory)
-    engine.close()
+    try:
+        sample = Image.new("L", (440, 100), 255)
+        ImageDraw.Draw(sample).text((25, 20), "OCR TEST", fill=0, font=ImageFont.load_default(size=46))
+        if "OCR TEST" not in engine.recognize(sample, 150):
+            raise RuntimeError("Bộ OCR đóng gói không vượt qua bài kiểm tra nhận dạng.")
+    finally:
+        engine.close()
     return WINDOWS_DLLS, tuple(urls)
