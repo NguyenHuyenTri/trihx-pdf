@@ -231,15 +231,13 @@ class WordExport(QThread):
         self.source = source
         self.destination = destination
         self.password = password
-        self.result = None
         self.error = None
 
     def run(self):
         try:
             from pdf_to_word import convert_pdf
 
-            self.result = convert_pdf(self.source, self.destination, password=self.password,
-                                      progress=self.page.emit)
+            convert_pdf(self.source, self.destination, password=self.password, progress=self.page.emit)
         except Exception as exc:
             self.error = str(exc)
         finally:
@@ -1221,13 +1219,7 @@ class PdfReaderWindow(QMainWindow):
             if worker.error is not None:
                 QMessageBox.warning(self, "PDF sang Word", worker.error)
                 return
-            scans, unreadable = worker.result
-            detail = f"Đã lưu tệp Word:\n{worker.destination}"
-            if scans:
-                detail += f"\n\nĐã nhận dạng {len(scans)} trang scan. Hãy rà lại chữ tiếng Việt và bố cục."
-            if unreadable:
-                detail += "\nTrang chưa nhận dạng được chữ: " + ", ".join(map(str, unreadable))
-            QMessageBox.information(self, "PDF sang Word", detail)
+            QMessageBox.information(self, "PDF sang Word", f"Đã lưu tệp Word:\n{worker.destination}")
         finally:
             worker.deleteLater()
 

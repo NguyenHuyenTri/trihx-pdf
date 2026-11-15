@@ -3,9 +3,6 @@ from io import BytesIO
 import os
 from pathlib import Path
 import re
-import shutil
-import subprocess
-import sys
 import tempfile
 from contextlib import ExitStack
 
@@ -15,7 +12,6 @@ from docx.enum.section import WD_ORIENT, WD_SECTION
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
-from scan_layout import add_scan_page
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
 _PAGE_MARGIN = 24
@@ -24,33 +20,6 @@ _CELL_VERTICAL_PADDING = 1.25
 
 def _text(value):
     return _CONTROL.sub("", value or "")
-
-
-def _ocr_engine():
-    executable = shutil.which("tesseract")
-    if not executable and os.name == "nt":
-        for key in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
-            root = os.environ.get(key)
-            if root:
-                candidate = Path(root) / "Tesseract-OCR" / "tesseract.exe"
-                if candidate.is_file():
-                    executable = str(candidate)
-                    break
-    if not executable:
-        raise RuntimeError("PDF có trang scan. Hãy cài Tesseract OCR 5 cùng gói tiếng Việt (vie) rồi thử lại.")
-    return executable
-
-
-def _ocr(image, engine, dpi):
-    buffer = BytesIO()
-    image.save(buffer, format="PNG")
-    result = subprocess.run([engine, "stdin", "stdout", "--dpi", str(dpi), "-l", "vie", "--psm", "3",
-                             "-c", "tessedit_create_hocr=1"],
-                            input=buffer.getvalue(), capture_output=True, timeout=180,
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    if result.returncode:
-        raise RuntimeError("Tesseract không xử lý được ảnh. Kiểm tra dữ liệu tiếng Việt (vie.traineddata).")
-    return _text(result.stdout.decode("utf-8", errors="replace")).strip()
 
 
 def _render(source, index, scale):
@@ -213,9 +182,6 @@ def convert_pdf(source_path, destination, *, password=None, progress=None):
     normal.font.name = "Times New Roman"
     normal.font.size = Pt(11)
     normal.paragraph_format.space_after = Pt(3)
-    engine = None
-    scan_pages = []
-    unreadable_pages = []
     with ExitStack() as stack:
         pdf = stack.enter_context(pdfplumber.open(source_path, password=password))
         if not pdf.doc.is_extractable:
@@ -229,6 +195,10 @@ def convert_pdf(source_path, destination, *, password=None, progress=None):
             try:
                 if progress:
                     progress(index + 1, len(rendered))
+                has_text = any(_text(char["text"]).strip() for char in page.chars)
+                if not has_text and page.images:
+                    raise ValueError("Trang chỉ có ảnh, không có lớp văn bản. "
+                                     "PDF sang Word chỉ hỗ trợ tài liệu có lớp chữ.")
                 section = word.add_section(WD_SECTION.NEW_PAGE) if index else word.sections[0]
                 # Word has limits on page dimensions. Keep output usable for unusual PDF sizes.
                 width, height = [max(144, min(1580, edge)) for edge in (page.width, page.height)]
@@ -236,26 +206,8 @@ def convert_pdf(source_path, destination, *, password=None, progress=None):
                 section.page_width, section.page_height = Pt(width), Pt(height)
                 section.left_margin = section.right_margin = Pt(_PAGE_MARGIN)
                 section.top_margin = section.bottom_margin = Pt(_PAGE_MARGIN)
-                if page.chars and any(str(char["text"]).strip() for char in page.chars):
+                if has_text:
                     _add_native_page(word, page, rendered, index, width - 2 * _PAGE_MARGIN)
-                elif page.images:
-                    scale = min(350 / 72, 4000 / max(page.width, page.height))
-                    image = _render(rendered, index, scale)
-                    dpi = round(scale * 72)
-                    if os.name == "nt" and getattr(sys, "frozen", False):
-                        if engine is None:
-                            from scan_ocr import windows_ocr
-
-                            engine = windows_ocr()
-                            stack.callback(engine.close)
-                        markup = engine.recognize(image, dpi)
-                    else:
-                        engine = engine or _ocr_engine()
-                        markup = _ocr(image, engine, dpi)
-                    scan_pages.append(index + 1)
-                    if not add_scan_page(word, markup, image.size, (width, height), _PAGE_MARGIN):
-                        unreadable_pages.append(index + 1)
-                        word.add_paragraph("[Không nhận dạng được chữ trên trang scan này.]")
                 else:
                     word.add_paragraph()
             except Exception as exc:
@@ -267,4 +219,3 @@ def convert_pdf(source_path, destination, *, password=None, progress=None):
         pending = Path(temp) / "export.docx"
         word.save(pending)
         os.replace(pending, destination)
-    return scan_pages, unreadable_pages

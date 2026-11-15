@@ -18,4 +18,4 @@ Nếu đang dùng bản mã nguồn, đóng ứng dụng và chạy lại `capnh
 
 Mở PDF và chọn **PDF sang Word** để lưu tệp DOCX có thể chỉnh sửa. Ứng dụng phục dựng chữ, hình và bảng có đường kẻ. Tài liệu nhiều cột, bảng phức tạp, con dấu và bố cục đặc biệt cần rà lại trong Word. Tệp PDF gốc được giữ nguyên và chữ ký số không chuyển sang DOCX.
 
-Với trang scan không có lớp chữ, bản Windows `HX PDF.exe` dùng OCR tiếng Việt tích hợp. Chọn **PDF sang Word** như bình thường. Quá trình nhận dạng chạy trên máy, kể cả khi không có mạng. Chữ nhận dạng và bảng scan cần được rà lại trong Word.
+PDF có trang scan chỉ chứa ảnh vẫn có thể mở và in. Khi chuyển sang Word, ứng dụng sẽ báo số trang thiếu lớp văn bản và dừng xuất tệp.
