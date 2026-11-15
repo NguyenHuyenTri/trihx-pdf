@@ -291,10 +291,12 @@ class PdfReaderWindow(QMainWindow):
             QToolButton, QPushButton { color: #26354a; background: #ffffff; border: 1px solid #d7e0eb; border-radius: 8px; padding: 7px 12px; }
             QToolButton:hover, QPushButton:hover { background: #f0f6ff; border-color: #9bbce8; }
             QLineEdit { color: #26354a; background: white; border: 1px solid #d7e0eb; border-radius: 7px; padding: 5px 4px; }
-            QTabBar::tab { background: #e8edf4; color: #34445a; padding: 7px 14px; margin-right: 3px; max-width: 260px; border: 1px solid #d8e0eb; border-bottom: none; border-top-left-radius: 7px; border-top-right-radius: 7px; }
+            QTabBar::tab { background: #d7dfec; color: #34445a; padding: 4px 8px; margin-right: 4px; max-width: 220px; border: 1px solid transparent; border-radius: 7px; }
             QTabBar::tab:selected { background: #f8fbff; color: #14253c; border-color: #a7bedf; }
             QTabBar::tab:hover { background: #f7f9fc; }
             QTabBar QToolButton { padding: 0; border-radius: 0; }
+            QToolButton#tabClose { background: transparent; border: 0; border-radius: 5px; padding: 0; }
+            QToolButton#tabClose:hover { background: #c7d3e4; }
             QStatusBar { background: #ffffff; border-top: 1px solid #dce3ec; color: #536276; }
         """)
 
@@ -399,12 +401,9 @@ class PdfReaderWindow(QMainWindow):
         fit_button.setMenu(fit_menu)
         toolbar.addWidget(fit_button)
         self.pdf_actions = toolbar.actions()[before_pdf:]
-        self.signature_action = toolbar.addAction("Chữ ký số")
-        self.signature_action.triggered.connect(self.verify_signatures)
-        self.pdf_actions.append(self.signature_action)
 
         self.tab_bar = QTabBar()
-        self.tab_bar.setTabsClosable(True)
+        self.tab_bar.setDrawBase(False)
         self.tab_bar.setMovable(True)
         self.tab_bar.setExpanding(False)
         self.tab_bar.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
@@ -412,7 +411,6 @@ class PdfReaderWindow(QMainWindow):
         self.tab_bar.setElideMode(Qt.TextElideMode.ElideMiddle)
         self.tab_bar.setIconSize(QSize(16, 16))
         self.tab_bar.currentChanged.connect(self._on_tab_changed)
-        self.tab_bar.tabCloseRequested.connect(self.close_tab)
         self.app_home_button = QToolButton()
         self.app_home_button.setText(APP_NAME)
         self.app_home_button.setObjectName("officeBrand")
@@ -752,6 +750,19 @@ class PdfReaderWindow(QMainWindow):
         index = self.tab_bar.addTab(self._file_icon(), path.name)
         self.tab_bar.setTabData(index, tab_key)
         self.tab_bar.setTabToolTip(index, str(path))
+        close_slot = QWidget(self.tab_bar)
+        close_layout = QHBoxLayout(close_slot)
+        close_layout.setContentsMargins(2, 0, 6, 0)
+        close_button = QToolButton(close_slot)
+        close_button.setObjectName("tabClose")
+        close_button.setFixedSize(24, 24)
+        close_button.setIcon(self._toolbar_icon("close"))
+        close_button.setIconSize(QSize(13, 13))
+        close_button.setToolTip("Đóng tab")
+        close_button.setAccessibleName(f"Đóng {path.name}")
+        close_layout.addWidget(close_button)
+        close_button.clicked.connect(lambda: self._close_tab_button(close_slot))
+        self.tab_bar.setTabButton(index, QTabBar.ButtonPosition.RightSide, close_slot)
         self.tab_bar.setCurrentIndex(index)
         self._tab_change_blocked = False
         self.tab_bar.show()
@@ -811,6 +822,12 @@ class PdfReaderWindow(QMainWindow):
         self.print_button.setEnabled(True)
         self.render_page()
         self.statusBar().showMessage(f"{self.file_path.name}  •  {len(self.document)} trang  •  Tệp không rời khỏi máy tính")
+
+    def _close_tab_button(self, close_slot: QWidget) -> None:
+        for index in range(self.tab_bar.count()):
+            if self.tab_bar.tabButton(index, QTabBar.ButtonPosition.RightSide) is close_slot:
+                self.close_tab(index)
+                return
 
     def close_tab(self, index: int) -> None:
         tab_key = self.tab_bar.tabData(index)
@@ -1153,6 +1170,9 @@ class PdfReaderWindow(QMainWindow):
                 painter.drawEllipse(3, 3, 18, 18)
                 painter.drawLine(12, 7, 12, 12)
                 painter.drawLine(12, 12, 16, 14)
+            elif kind == "close":
+                painter.drawLine(6, 6, 18, 18)
+                painter.drawLine(18, 6, 6, 18)
             else:
                 painter.drawRoundedRect(2, 8, 20, 10, 2, 2)
                 painter.fillRect(6, 13, 12, 9, QColor("#e9edf5"))
@@ -1210,20 +1230,6 @@ class PdfReaderWindow(QMainWindow):
             QMessageBox.information(self, "PDF sang Word", detail)
         finally:
             worker.deleteLater()
-
-    def verify_signatures(self):
-        if self.file_path is None or self.document is None:
-            return
-        try:
-            from signatures import signature_report
-            report = signature_report(self.file_path)
-        except Exception as exc:
-            report = f"Không xác minh được chữ ký số trong tệp này.\n{exc}"
-        dialog = QMessageBox(self)
-        dialog.setWindowTitle("Chữ ký số")
-        dialog.setTextFormat(Qt.TextFormat.PlainText)
-        dialog.setText(report)
-        dialog.exec()
 
     def print_document(self) -> None:
         if self.document is not None:
