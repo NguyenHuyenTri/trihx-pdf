@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from contextlib import ExitStack
 
@@ -236,9 +237,17 @@ def convert_pdf(source_path, destination, *, password=None, progress=None):
                 if page.chars and any(str(char["text"]).strip() for char in page.chars):
                     _add_native_page(word, page, rendered, index, width - 2 * _PAGE_MARGIN)
                 elif page.images:
-                    engine = engine or _ocr_engine()
                     dpi = min(300 / 72, 4000 / max(page.width, page.height))
-                    text = _ocr(_render(rendered, index, dpi), engine)
+                    if os.name == "nt" and getattr(sys, "frozen", False):
+                        if engine is None:
+                            from scan_ocr import windows_ocr
+
+                            engine = windows_ocr()
+                            stack.callback(engine.close)
+                        text = _text(engine.recognize(_render(rendered, index, dpi), round(dpi * 72))).strip()
+                    else:
+                        engine = engine or _ocr_engine()
+                        text = _ocr(_render(rendered, index, dpi), engine)
                     scan_pages.append(index + 1)
                     if text:
                         for line in text.splitlines():
