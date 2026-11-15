@@ -1233,7 +1233,8 @@ class PdfReaderWindow(QMainWindow):
 
     def print_document(self) -> None:
         if self.document is not None:
-            dialog = PdfPrintDialog(self.document, self.page_index, self.settings, self)
+            dialog = PdfPrintDialog(self.document, self.page_index, self.settings, self,
+                                    document_path=self.file_path)
             dialog.exec()
 
     def closeEvent(self, event) -> None:
