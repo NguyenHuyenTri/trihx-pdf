@@ -78,11 +78,15 @@ class PaperPreview(QWidget):
 
 
 class PdfPrintDialog(QDialog):
-    def __init__(self, document, current, settings, parent=None):
+    def __init__(self, document, current, settings, parent=None, *, document_path=None):
         super().__init__(parent)
         self.document = document
         self.current = current
         self.settings = settings
+        self.document_profile = (
+            f"documentPrintProfiles/{hashlib.sha256(str(document_path).encode()).hexdigest()}"
+            if document_path is not None else None
+        )
         self.mode = None
         self.last_job = None
         self.last_error = ""
@@ -93,6 +97,7 @@ class PdfPrintDialog(QDialog):
         self.setWindowTitle("In PDF")
         self.resize(950, 660)
         self._build_ui()
+        self._restore_page_selection()
         self._select_printer()
 
     @staticmethod
@@ -111,8 +116,8 @@ class PdfPrintDialog(QDialog):
         self.printers = self._combo()
         printers = QPrinterInfo.availablePrinterNames()
         self.printers.addItems(printers)
-        default = QPrinterInfo.defaultPrinterName()
-        self.printers.setCurrentText(default)
+        preferred = self.settings.value("print/lastPrinter", "", type=str)
+        self.printers.setCurrentText(preferred if preferred in printers else QPrinterInfo.defaultPrinterName())
         form.addRow("Máy in", self.printers)
         self.driver = QLabel()
         self.driver.setWordWrap(True)
@@ -138,8 +143,6 @@ class PdfPrintDialog(QDialog):
         self.flip = self._combo("Cạnh dài", "Cạnh ngắn")
         form.addRow("Lật theo", self.flip)
         self.paper = self._combo()
-        for value, (label, _, _) in PAPERS.items():
-            self.paper.addItem(label, value)
         form.addRow("Khổ giấy", self.paper)
         self.scale = self._combo("Vừa khổ giấy", "Kích thước thật")
         form.addRow("Tỷ lệ", self.scale)
@@ -203,6 +206,7 @@ class PdfPrintDialog(QDialog):
         self.duplex_supported = False
         self.sides.setEnabled(bool(name) and sys.platform == "win32")
         self.sides.model().item(1).setEnabled(False)
+        papers = [(label, code) for code, (label, _, _) in PAPERS.items()]
         if sys.platform == "win32" and name:
             try:
                 import win32print
@@ -218,17 +222,24 @@ class PdfPrintDialog(QDialog):
                 labels = win32print.DeviceCapabilities(name, port, 16)
                 sizes = win32print.DeviceCapabilities(name, port, 3)
                 if codes and labels and sizes:
-                    self.paper.clear()
-                    for code, label, size in zip(codes, labels, sizes):
-                        width, height = size["x"], size["y"]
-                        if width > 0 and height > 0:
-                            self.paper.addItem(label.rstrip("\x00 ").strip(), (code, width / 10, height / 10))
+                    supported_papers = [
+                        (label.rstrip("\x00 ").strip(), (code, size["x"] / 10, size["y"] / 10))
+                        for code, label, size in zip(codes, labels, sizes)
+                        if size["x"] > 0 and size["y"] > 0
+                    ]
+                    if supported_papers:
+                        papers = supported_papers
             except Exception as exc:
                 self.driver.setText(f"Không đọc được driver · {exc}")
+        self.paper.clear()
+        for label, data in papers:
+            self.paper.addItem(label, data)
+        self.scale.setCurrentIndex(0)
         self._apply_mode()
         self.settings.beginGroup(self._profile())
         try:
             self._select_paper(self.settings.value("paper", self._paper()[0], type=int))
+            self.copies.setValue(self.settings.value("copies", self.copies.value(), type=int))
             for key, widget in (("orientation", self.orientation), ("scale", self.scale),
                                 ("sides", self.sides), ("flip", self.flip)):
                 widget.setCurrentIndex(self.settings.value(key, widget.currentIndex(), type=int))
@@ -253,12 +264,14 @@ class PdfPrintDialog(QDialog):
                 break
 
     def _apply_mode(self):
+        self.copies.setValue(1)
         self.orientation.setCurrentIndex(0)
         self.sides.setCurrentIndex(0)
         self.flip.setCurrentIndex(0)
         self._select_paper(9)
         if self.mode is None:
             return
+        self.copies.setValue(max(1, self.mode.Copies))
         self._select_paper(self.mode.PaperSize)
         self.orientation.setCurrentIndex(int(self.mode.Orientation == 2))
         self.sides.setCurrentIndex(int(self.duplex_supported and self.mode.Duplex in (2, 3)))
@@ -283,7 +296,6 @@ class PdfPrintDialog(QDialog):
             self._configured()
             if driver_properties(self.printers.currentText(), int(self.winId()), self.mode):
                 self._apply_mode()
-                self.copies.setValue(max(1, self.mode.Copies))
                 self._update_preview()
         except Exception as exc:
             QMessageBox.warning(self, "Thuộc tính máy in", str(exc))
@@ -351,12 +363,45 @@ class PdfPrintDialog(QDialog):
         self.preview.update()
 
     def _save_profile(self):
+        self.settings.setValue("print/lastPrinter", self.printers.currentText())
         self.settings.beginGroup(self._profile())
         try:
             self.settings.setValue("paper", self._paper()[0])
+            self.settings.setValue("copies", self.copies.value())
             for key, widget in (("orientation", self.orientation), ("scale", self.scale),
                                 ("sides", self.sides), ("flip", self.flip)):
                 self.settings.setValue(key, widget.currentIndex())
+        finally:
+            self.settings.endGroup()
+
+    def _restore_page_selection(self):
+        if self.document_profile is None:
+            return
+        self.settings.beginGroup(self.document_profile)
+        try:
+            scope = self.settings.value("scope", 0, type=int)
+            parity = self.settings.value("parity", 0, type=int)
+            specification = self.settings.value("specification", "", type=str)
+        finally:
+            self.settings.endGroup()
+        if not (0 <= scope < self.scope.count() and 0 <= parity < self.parity.count()):
+            return
+        try:
+            selected_pages(len(self.document), self.current, scope, specification, parity)
+        except ValueError:
+            return
+        self.scope.setCurrentIndex(scope)
+        self.specification.setText(specification)
+        self.parity.setCurrentIndex(parity)
+
+    def _save_page_selection(self):
+        if self.document_profile is None:
+            return
+        self.settings.beginGroup(self.document_profile)
+        try:
+            self.settings.setValue("scope", self.scope.currentIndex())
+            self.settings.setValue("parity", self.parity.currentIndex())
+            self.settings.setValue("specification", self.specification.text())
         finally:
             self.settings.endGroup()
 
@@ -365,7 +410,8 @@ class PdfPrintDialog(QDialog):
         if self.mode is None or not self.page_list:
             return
         if self.sides.currentIndex() != 2 or len(self.page_list) < 2:
-            self._print(self.page_list)
+            if self._print(self.page_list):
+                self._save_page_selection()
             return
         if self.copies.value() != 1:
             QMessageBox.information(self, "In hai mặt thủ công", "Chọn một bản cho mỗi lượt in thủ công.")
@@ -378,20 +424,19 @@ class PdfPrintDialog(QDialog):
         pages = self.page_list[:]
         fronts = pages[::2]
         backs = pages[1::2]
-        self._print(fronts)
-        if self.last_error:
+        if not self._print(fronts):
             return
         order, confirmed = QInputDialog.getItem(
             self, "Nạp lại giấy",
             "Đợi in xong. Nếu in số trang lẻ, lấy tờ chỉ có mặt trước ra. "
             "Lật và nạp lại giấy theo chiều đã in thử, rồi chọn thứ tự in mặt sau.",
             ["Đảo thứ tự mặt sau", "Giữ thứ tự mặt sau"], 0, False)
-        if confirmed:
-            self._print(list(reversed(backs)) if order.startswith("Đảo") else backs)
+        if confirmed and self._print(list(reversed(backs)) if order.startswith("Đảo") else backs):
+            self._save_page_selection()
 
     def _print(self, pages, image_dpi=None):
         if self.mode is None or not pages:
-            return
+            return False
         self.last_error = ""
         name = self.printers.currentText()
         self.last_request = (name, tuple(pages))
@@ -408,9 +453,10 @@ class PdfPrintDialog(QDialog):
             QApplication.restoreOverrideCursor()
         if self.last_error:
             self.message.setText(self.last_error)
-            return
+            return False
         self._save_profile()
         self.message.setText(f"Đã gửi vào hàng đợi Windows · Lệnh {self.last_job}")
+        return True
 
     def _state(self):
         if sys.platform != "win32" or not self.printers.currentText():
