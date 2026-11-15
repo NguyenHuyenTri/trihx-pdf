@@ -185,6 +185,7 @@ class PdfPrintDialog(QDialog):
 
         self.update_timer = QTimer(self, singleShot=True, interval=140)
         self.update_timer.timeout.connect(self._update_preview)
+        self.sides.currentIndexChanged.connect(self._update_flip_control)
         for combo in (self.scope, self.parity, self.sides, self.orientation,
                       self.flip, self.paper, self.scale):
             combo.currentIndexChanged.connect(self._schedule_preview)
@@ -266,6 +267,16 @@ class PdfPrintDialog(QDialog):
     def _duplex(self):
         return 2 + self.flip.currentIndex() if self.duplex_supported and self.sides.currentIndex() == 1 else 1
 
+    def _update_flip_control(self):
+        sides = self.sides.currentIndex()
+        manual = sides == 2
+        enabled = self.mode is not None and (manual or (sides == 1 and self.duplex_supported))
+        self.flip.setEnabled(enabled)
+        self.flip.setToolTip(
+            "Cạnh dùng để lật giấy khi nạp lại cho lượt in mặt sau."
+            if manual else "Chọn in hai mặt để thiết lập cạnh lật."
+        )
+
     def _configured(self):
         return configured_mode(self.printers.currentText(), self.mode, self._paper()[0],
                                self.orientation.currentIndex() == 1, self._duplex(), self.copies.value())
@@ -292,7 +303,7 @@ class PdfPrintDialog(QDialog):
 
     def _update_preview(self):
         self.specification.setEnabled(self.scope.currentIndex() == 2)
-        self.flip.setEnabled(self._duplex() != 1)
+        self._update_flip_control()
         self.print_current.setEnabled(self.mode is not None)
         try:
             pages = selected_pages(len(self.document), self.current, self.scope.currentIndex(),
@@ -378,8 +389,9 @@ class PdfPrintDialog(QDialog):
             return
         order, confirmed = QInputDialog.getItem(
             self, "Nạp lại giấy",
-            "Đợi in xong. Nếu tài liệu có số trang lẻ, lấy tờ cuối ra trước khi nạp lại. "
-            "Nạp giấy theo chiều đã in thử và chọn thứ tự in mặt sau.",
+            f"Đợi in xong. Lật giấy theo {self.flip.currentText().lower()}. "
+            "Nếu in số trang lẻ, lấy tờ chỉ có mặt trước ra trước khi nạp lại. "
+            "Đặt mặt cần in vào khay theo chiều đã in thử, rồi chọn thứ tự in mặt sau.",
             ["Đảo thứ tự mặt sau", "Giữ thứ tự mặt sau"], 0, False)
         if confirmed:
             self._print(list(reversed(backs)) if order.startswith("Đảo") else backs)
