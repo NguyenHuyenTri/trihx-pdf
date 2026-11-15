@@ -27,7 +27,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QProgressDialog,
     QScrollArea,
+    QSizePolicy,
     QStatusBar,
+    QStyle,
     QTabBar,
     QToolBar,
     QToolButton,
@@ -247,6 +249,9 @@ class WordExport(QThread):
 class PdfReaderWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        self._combined_title_bar = sys.platform == "win32"
+        if self._combined_title_bar:
+            self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(self._toolbar_icon("brand"))
         self.resize(1180, 820)
@@ -271,31 +276,15 @@ class PdfReaderWindow(QMainWindow):
         self._build_actions()
         self._set_empty_state()
         self._update_document_controls()
-        if sys.platform == "win32":
-            self._hide_windows_caption_brand()
-
-    def _hide_windows_caption_brand(self) -> None:
-        import pywintypes
-        import win32con
-        import win32gui
-
-        hwnd = int(self.winId())
-        try:
-            win32gui.SetWindowText(hwnd, "")
-            # Suppress the caption icon while keeping the window icon and system buttons.
-            style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, style | win32con.WS_EX_DLGMODALFRAME)
-            flags = (win32con.SWP_FRAMECHANGED | win32con.SWP_NOMOVE | win32con.SWP_NOSIZE |
-                     win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
-            win32gui.SetWindowPos(hwnd, 0, 0, 0, 0, 0, flags)
-        except pywintypes.error:
-            pass
 
     def _build_ui(self) -> None:
         self.setStyleSheet("""
             QMainWindow { background: #eef2f7; }
             QToolBar { background: #e9edf5; border: 0; border-bottom: 1px solid #cbd5e3; spacing: 5px; padding: 5px 9px; }
-            QToolBar#documentTabs { background: #e1e7f2; padding: 4px 8px 0px; }
+            QWidget#documentTabs { background: #e1e7f2; border-bottom: 1px solid #cbd5e3; }
+            QToolButton[captionButton="true"] { background: transparent; border: 0; border-radius: 0; padding: 0; }
+            QToolButton[captionButton="true"]:hover { background: #d0d9e7; }
+            QToolButton#captionClose:hover { background: #f4b7bc; }
             QPushButton#fileAction { background: transparent; border: 0; padding: 5px 10px; }
             QPushButton#fileAction:hover { background: #d7e0ef; }
             QToolButton#officeBrand { background: #d5deec; border: 0; font-weight: bold; padding: 5px 10px; }
@@ -305,6 +294,7 @@ class PdfReaderWindow(QMainWindow):
             QTabBar::tab { background: #e8edf4; color: #34445a; padding: 7px 14px; margin-right: 3px; max-width: 260px; border: 1px solid #d8e0eb; border-bottom: none; border-top-left-radius: 7px; border-top-right-radius: 7px; }
             QTabBar::tab:selected { background: #f8fbff; color: #14253c; border-color: #a7bedf; }
             QTabBar::tab:hover { background: #f7f9fc; }
+            QTabBar QToolButton { padding: 0; border-radius: 0; }
             QStatusBar { background: #ffffff; border-top: 1px solid #dce3ec; color: #536276; }
         """)
 
@@ -417,6 +407,7 @@ class PdfReaderWindow(QMainWindow):
         self.tab_bar.setTabsClosable(True)
         self.tab_bar.setMovable(True)
         self.tab_bar.setExpanding(False)
+        self.tab_bar.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         self.tab_bar.setUsesScrollButtons(True)
         self.tab_bar.setElideMode(Qt.TextElideMode.ElideMiddle)
         self.tab_bar.setIconSize(QSize(16, 16))
@@ -434,16 +425,8 @@ class PdfReaderWindow(QMainWindow):
         self.add_tab_button.setText("+")
         self.add_tab_button.setToolTip("Mở thêm tài liệu trong tab mới")
         self.add_tab_button.clicked.connect(self.open_dialog)
-        self.document_tabs_toolbar = QToolBar("Các tài liệu đang mở")
-        self.document_tabs_toolbar.setObjectName("documentTabs")
-        self.document_tabs_toolbar.setMovable(False)
-        self.document_tabs_toolbar.setFloatable(False)
-        self.document_tabs_toolbar.addWidget(self.app_home_button)
-        self.tabs_toolbar_action = self.document_tabs_toolbar.addWidget(self.tab_bar)
-        self.tabs_toolbar_action.setVisible(False)
-        self.document_tabs_toolbar.addWidget(self.add_tab_button)
-        self.insertToolBar(file_toolbar, self.document_tabs_toolbar)
-        self.insertToolBarBreak(file_toolbar)
+        self.tab_bar.hide()
+        self._build_document_title_bar()
         self.file_toolbar = file_toolbar
 
         self.scroll = QScrollArea()
@@ -488,6 +471,62 @@ class PdfReaderWindow(QMainWindow):
         self.recent_popup.resize(720, 600)
         self.setCentralWidget(self.scroll)
         self.setStatusBar(QStatusBar())
+
+    def _build_document_title_bar(self) -> None:
+        row = QWidget()
+        row.setObjectName("documentTabs")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(8, 0, 0, 1)
+        layout.setSpacing(5)
+        layout.addWidget(self.app_home_button)
+        layout.addWidget(self.tab_bar)
+        layout.addWidget(self.add_tab_button)
+        if self._combined_title_bar:
+            self.title_drag_area = QWidget(row)
+            self.title_drag_area.setMinimumWidth(32)
+            self.title_drag_area.installEventFilter(self)
+            layout.addWidget(self.title_drag_area, 1)
+            controls = QHBoxLayout()
+            controls.setSpacing(0)
+            for icon, label, action in (
+                (QStyle.StandardPixmap.SP_TitleBarMinButton, "Thu nhỏ", self.showMinimized),
+                (QStyle.StandardPixmap.SP_TitleBarMaxButton, "Phóng to", self._toggle_maximized),
+                (QStyle.StandardPixmap.SP_TitleBarCloseButton, "Đóng", self.close),
+            ):
+                button = QToolButton(row)
+                button.setProperty("captionButton", True)
+                button.setIcon(self.style().standardIcon(icon))
+                button.setIconSize(QSize(14, 14))
+                button.setFixedSize(46, 40)
+                button.setToolTip(label)
+                button.setAccessibleName(label)
+                button.clicked.connect(action)
+                controls.addWidget(button)
+                if icon == QStyle.StandardPixmap.SP_TitleBarMaxButton:
+                    self.maximize_button = button
+                elif icon == QStyle.StandardPixmap.SP_TitleBarCloseButton:
+                    button.setObjectName("captionClose")
+            layout.addLayout(controls)
+        else:
+            layout.addStretch(1)
+        self.setMenuWidget(row)
+
+    def _toggle_maximized(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+        else:
+            self.showMaximized()
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "maximize_button"):
+            if self.isMaximized():
+                icon, label = QStyle.StandardPixmap.SP_TitleBarNormalButton, "Khôi phục"
+            else:
+                icon, label = QStyle.StandardPixmap.SP_TitleBarMaxButton, "Phóng to"
+            self.maximize_button.setIcon(self.style().standardIcon(icon))
+            self.maximize_button.setToolTip(label)
+            self.maximize_button.setAccessibleName(label)
 
     def _load_recent_files(self) -> list[dict[str, str | float]]:
         saved = self.settings.value("recentFilesJson", "")
@@ -715,7 +754,7 @@ class PdfReaderWindow(QMainWindow):
         self.tab_bar.setTabToolTip(index, str(path))
         self.tab_bar.setCurrentIndex(index)
         self._tab_change_blocked = False
-        self.tabs_toolbar_action.setVisible(True)
+        self.tab_bar.show()
         self._activate_tab(tab_key, save_previous=False)
 
     def _save_active_tab_state(self) -> None:
@@ -791,7 +830,7 @@ class PdfReaderWindow(QMainWindow):
         next_index = self.tab_bar.currentIndex()
         self._tab_change_blocked = False
         if self.tab_bar.count() == 0:
-            self.tabs_toolbar_action.setVisible(False)
+            self.tab_bar.hide()
             self._show_no_documents()
         elif is_active:
             self._activate_tab(str(self.tab_bar.tabData(next_index)), save_previous=False)
@@ -947,7 +986,16 @@ class PdfReaderWindow(QMainWindow):
         self.set_zoom(zoom)
 
     def eventFilter(self, watched, event):
-        if (getattr(self, "scroll", None) is not None and watched is self.scroll.viewport() and event.type() == QEvent.Type.Wheel
+        if watched is getattr(self, "title_drag_area", None):
+            if (event.type() == QEvent.Type.MouseButtonDblClick and
+                    event.button() == Qt.MouseButton.LeftButton):
+                self._toggle_maximized()
+                return True
+            if (event.type() == QEvent.Type.MouseButtonPress and
+                    event.button() == Qt.MouseButton.LeftButton):
+                return self.windowHandle().startSystemMove()
+        scroll = self.__dict__.get("scroll")
+        if (event.type() == QEvent.Type.Wheel and scroll is not None and watched is scroll.viewport()
                 and self.document is not None
                 and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
             delta = event.angleDelta().y() or event.pixelDelta().y()
