@@ -1,6 +1,6 @@
-# TRIHX Office
+# TRIHX PDF
 
-Ứng dụng Windows 10/11 x64 quản lý PDF, Word, Excel và PowerPoint theo tab. PDF được đọc và in trực tiếp. Tệp Office dùng Microsoft Office desktop đã cài để sửa và lưu bản gốc. Đóng tab TRIHX Office không đóng tài liệu trong Microsoft Office.
+Ứng dụng Windows 10/11 x64 để đọc, in và chuyển PDF sang Word.
 
 ## Cài đặt
 
@@ -14,4 +14,8 @@ Nếu đang dùng bản mã nguồn, đóng ứng dụng và chạy lại `capnh
 - **Chữ ký số** báo kết quả kiểm tra ngoại tuyến độc lập với hình chữ ký hoặc con dấu trên trang.
 - **Print** mở bản xem trước, có phạm vi trang, lọc chẵn/lẻ, số bản, khổ giấy, hướng giấy, tỷ lệ và hai mặt theo driver. Có thể in hai mặt thủ công sau khi thử hướng nạp giấy.
 - **Hỗ trợ in** mở hàng đợi, gửi trang kiểm tra, sao chép chẩn đoán và thử lại dạng ảnh sau khi xác nhận.
-- Tab Office chuyển tới cửa sổ Microsoft Office thật. Mục **Cửa sổ Office** cho thử ẩn tiêu đề và khôi phục cửa sổ. Khả năng căn cửa sổ và ẩn tiêu đề phụ thuộc phiên bản Office và cấu hình Windows.
+## Chuyển PDF sang Word
+
+Mở PDF và chọn **PDF sang Word** để lưu tệp DOCX có thể chỉnh sửa. Ứng dụng phục dựng chữ, hình và bảng có đường kẻ. Tài liệu nhiều cột, bảng phức tạp, con dấu và bố cục đặc biệt cần rà lại trong Word. Tệp PDF gốc được giữ nguyên và chữ ký số không chuyển sang DOCX.
+
+Với trang scan không có lớp chữ, cài **Tesseract OCR 5** và chọn dữ liệu tiếng Việt (`vie.traineddata`). Để TRIHX tìm thấy Tesseract, cài vào thư mục Tesseract-OCR mặc định hoặc thêm thư mục chứa `tesseract.exe` vào PATH. Quá trình nhận dạng thực hiện trên máy. Bảng scan xuất thành văn bản để rà lại.

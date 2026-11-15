@@ -7,9 +7,8 @@ from math import ceil
 from pathlib import Path
 
 import pypdfium2 as pdfium
-from PySide6.QtCore import Qt, QSize, QTimer, QSettings, QPoint, QEvent
+from PySide6.QtCore import Qt, QSize, QTimer, QSettings, QPoint, QEvent, QThread, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QIntValidator, QKeySequence, QPainter, QPen, QPixmap, QShortcut
-from office_bridge import DOCUMENT_TYPES, FILE_FILTER, OFFICE_TYPES, OfficeWindow, find_office_window, show_office
 from print_dialog import PdfPrintDialog
 from PySide6.QtWidgets import (
     QApplication,
@@ -26,6 +25,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QProgressDialog,
     QScrollArea,
     QStatusBar,
     QTabBar,
@@ -36,7 +36,9 @@ from PySide6.QtWidgets import (
 )
 
 
-APP_NAME = "TRIHX Office"
+APP_NAME = "TRIHX PDF"
+DOCUMENT_TYPES = {".pdf"}
+FILE_FILTER = "Tài liệu PDF (*.pdf)"
 RENDER_SCALE = 1.35
 MIN_ZOOM_PERCENT = 25
 MAX_ZOOM_PERCENT = 400
@@ -219,6 +221,29 @@ class PdfPageLabel(QLabel):
         self._char_boxes.clear()
 
 
+class WordExport(QThread):
+    page = Signal(int, int)
+
+    def __init__(self, source, destination, password, parent):
+        super().__init__(parent)
+        self.source = source
+        self.destination = destination
+        self.password = password
+        self.result = None
+        self.error = None
+
+    def run(self):
+        try:
+            from pdf_to_word import convert_pdf
+
+            self.result = convert_pdf(self.source, self.destination, password=self.password,
+                                      progress=self.page.emit)
+        except Exception as exc:
+            self.error = str(exc)
+        finally:
+            self.password = None
+
+
 class PdfReaderWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -239,8 +264,7 @@ class PdfReaderWindow(QMainWindow):
         self.open_tabs: dict[str, dict] = {}
         self.active_tab_key: str | None = None
         self._tab_change_blocked = False
-        self.office_window = None
-        self.office_diagnostic = "Chưa mở tệp Office."
+        self.word_export = None
         self.settings = QSettings("TRIHX", "HX PDF")
         self.recent_files: list[dict[str, str | float]] = self._load_recent_files()
         self._build_ui()
@@ -288,6 +312,10 @@ class PdfReaderWindow(QMainWindow):
         self.print_button.setIconSize(QSize(20, 20))
         self.print_button.clicked.connect(self.print_document)
         file_toolbar.addWidget(self.print_button)
+        self.export_button = QPushButton("PDF sang Word")
+        self.export_button.setObjectName("fileAction")
+        self.export_button.clicked.connect(self.export_word)
+        file_toolbar.addWidget(self.export_button)
 
         toolbar = file_toolbar
         before_pdf = len(toolbar.actions())
@@ -365,18 +393,6 @@ class PdfReaderWindow(QMainWindow):
         self.signature_action = toolbar.addAction("Chữ ký số")
         self.signature_action.triggered.connect(self.verify_signatures)
         self.pdf_actions.append(self.signature_action)
-        self.office_options = QToolButton()
-        self.office_options.setText("Cửa sổ Office")
-        self.office_options.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        options = QMenu(self.office_options)
-        self.hide_caption = options.addAction("Thử ẩn thanh tiêu đề Office")
-        self.hide_caption.setCheckable(True)
-        self.hide_caption.setChecked(self.settings.value("hideOfficeCaption", True, type=bool))
-        self.hide_caption.toggled.connect(self._set_office_caption)
-        options.addAction("Khôi phục cửa sổ Office", self._detach_office_window)
-        options.addAction("Sao chép chẩn đoán", self._copy_office_diagnostic)
-        self.office_options.setMenu(options)
-        self.office_toolbar_action = toolbar.addWidget(self.office_options)
 
         self.tab_bar = QTabBar()
         self.tab_bar.setTabsClosable(True)
@@ -494,6 +510,8 @@ class PdfReaderWindow(QMainWindow):
             if not path_value:
                 continue
             path = Path(path_value)
+            if path.suffix.lower() not in DOCUMENT_TYPES:
+                continue
             try:
                 opened = float(entry.get("opened", 0) or 0)
             except (TypeError, ValueError):
@@ -515,7 +533,7 @@ class PdfReaderWindow(QMainWindow):
             row_layout.setContentsMargins(6, 4, 6, 4)
             row_layout.setSpacing(8)
             icon_label = QLabel()
-            icon_label.setPixmap(self._file_icon(path).pixmap(28, 28))
+            icon_label.setPixmap(self._file_icon().pixmap(28, 28))
             icon_label.setFixedSize(30, 34)
             row_layout.addWidget(icon_label)
             details = QVBoxLayout()
@@ -618,23 +636,18 @@ class PdfReaderWindow(QMainWindow):
         path = path.expanduser().resolve()
         suffix = path.suffix.lower()
         if suffix not in DOCUMENT_TYPES or not path.is_file():
-            QMessageBox.warning(self, "Không mở được tệp", "Hãy chọn tệp PDF, Word, Excel hoặc PowerPoint có sẵn.")
+            QMessageBox.warning(self, "Không mở được tệp", "Hãy chọn tệp PDF có sẵn.")
             return
         tab_key = str(path).casefold()
         if tab_key in self.open_tabs:
             self._record_recent_file(path)
             for index in range(self.tab_bar.count()):
                 if self.tab_bar.tabData(index) == tab_key:
-                    if self.tab_bar.currentIndex() == index and suffix in OFFICE_TYPES:
-                        self._open_office(path)
-                    else:
-                        self.tab_bar.setCurrentIndex(index)
+                    self.tab_bar.setCurrentIndex(index)
                     break
             return
 
-        if suffix in OFFICE_TYPES:
-            self._add_document_tab(tab_key, path, None)
-            return
+        password = None
 
         try:
             new_document = pdfium.PdfDocument(str(path))
@@ -660,14 +673,15 @@ class PdfReaderWindow(QMainWindow):
                 QMessageBox.critical(self, "Không mở được PDF", f"Mật khẩu không đúng hoặc tệp bị lỗi.\n\nChi tiết: {password_exc}")
                 return
 
-        self._add_document_tab(tab_key, path, new_document)
+        self._add_document_tab(tab_key, path, new_document, password)
 
-    def _add_document_tab(self, tab_key, path, document):
+    def _add_document_tab(self, tab_key, path, document, password=None):
         self._record_recent_file(path)
         self._save_active_tab_state()
         self.open_tabs[tab_key] = {
             "path": path,
             "document": document,
+            "password": password,
             "page_index": 0,
             "zoom": RENDER_SCALE,
             "page_text": {},
@@ -677,7 +691,7 @@ class PdfReaderWindow(QMainWindow):
             "search_text": "",
         }
         self._tab_change_blocked = True
-        index = self.tab_bar.addTab(self._file_icon(path), path.name)
+        index = self.tab_bar.addTab(self._file_icon(), path.name)
         self.tab_bar.setTabData(index, tab_key)
         self.tab_bar.setTabToolTip(index, str(path))
         self.tab_bar.setCurrentIndex(index)
@@ -710,8 +724,6 @@ class PdfReaderWindow(QMainWindow):
     def _activate_tab(self, tab_key: str, save_previous: bool = True) -> None:
         if tab_key not in self.open_tabs:
             return
-        self._office_open_token = None
-        self._restore_office_window()
         if save_previous:
             self._save_active_tab_state()
         self._clear_page_widgets()
@@ -720,24 +732,6 @@ class PdfReaderWindow(QMainWindow):
         self.file_path = state["path"]
         self.document = state["document"]
         self._update_document_controls()
-        if self.document is None:
-            path = self.file_path
-            panel = QWidget()
-            layout = QVBoxLayout(panel)
-            layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label = QLabel(path.name)
-            label.setTextFormat(Qt.TextFormat.PlainText)
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label.setWordWrap(True)
-            layout.addWidget(label)
-            application = OFFICE_TYPES[path.suffix.lower()][0]
-            reopen = QPushButton(f"Mở trong Microsoft {application}")
-            reopen.clicked.connect(lambda: self._open_office(path))
-            layout.addWidget(reopen, alignment=Qt.AlignmentFlag.AlignCenter)
-            self.pages_layout.addWidget(panel)
-            self.statusBar().showMessage(str(path))
-            QTimer.singleShot(0, lambda: self._open_office(path) if self.active_tab_key == tab_key else None)
-            return
         self.page_index = state["page_index"]
         self.zoom = state["zoom"]
         self.page_text = state["page_text"]
@@ -768,8 +762,6 @@ class PdfReaderWindow(QMainWindow):
         tab_key = str(tab_key)
         is_active = tab_key == self.active_tab_key
         if is_active:
-            self._office_open_token = None
-            self._restore_office_window()
             self._save_active_tab_state()
             self._clear_page_widgets()
             self.active_tab_key = None
@@ -1057,21 +1049,20 @@ class PdfReaderWindow(QMainWindow):
         for action in self.pdf_actions:
             action.setVisible(self.document is not None)
         self.print_button.setEnabled(self.file_path is not None)
-        self.office_toolbar_action.setVisible(self.file_path is not None and self.document is None)
+        self.export_button.setEnabled(self.document is not None and self.word_export is None)
 
     @staticmethod
-    def _file_icon(path):
-        _, _, letter, color = OFFICE_TYPES.get(path.suffix.lower(), ("", "", "PDF", "#cf2929"))
+    def _file_icon():
         pixmap = QPixmap(32, 32)
         pixmap.fill(Qt.GlobalColor.transparent)
         with QPainter(pixmap) as painter:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(color))
+            painter.setBrush(QColor("#cf2929"))
             painter.drawRoundedRect(0, 0, 32, 32, 5, 5)
             painter.setPen(Qt.GlobalColor.white)
-            painter.setFont(QFont("Segoe UI", 9 if letter == "PDF" else 15, QFont.Weight.Bold))
-            painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, letter)
+            painter.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+            painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "PDF")
         return QIcon(pixmap)
 
     @staticmethod
@@ -1105,93 +1096,55 @@ class PdfReaderWindow(QMainWindow):
                 painter.drawLine(9, 17, 15, 17)
         return QIcon(pixmap)
 
-    def _open_office(self, path, *, printing=False):
-        self._office_open_token = None
-        self._restore_office_window()
-        try:
-            hwnd, program = show_office(path, printing=printing)
-            self.office_diagnostic = "Đang tìm cửa sổ Office."
-            self._office_open_token = object()
-            self._attach_office_when_ready(path, program, self._office_open_token, hwnd=hwnd)
-            self._record_recent_file(path)
-        except Exception as exc:
-            self.office_diagnostic = f"Mở tệp: {exc}"
-            QMessageBox.warning(self, "Microsoft Office",
-                                f"Không mở được thao tác trong Microsoft Office.\n{exc}")
-
-    def _attach_office_when_ready(self, path, program, token, *, hwnd=0, attempt=0):
-        if getattr(self, "_office_open_token", None) is not token or self.file_path != path or not self.isVisible():
+    def export_word(self):
+        if self.document is None or self.word_export is not None:
             return
-        try:
-            hwnd = hwnd or find_office_window(path, program)
-            if hwnd:
-                if self.office_window is None or self.office_window.hwnd != hwnd:
-                    self._restore_office_window()
-                    self.office_window = OfficeWindow(hwnd)
-                self._align_office_window()
-                if self.office_window is not None and self.office_window.host is not None:
-                    self.office_diagnostic = "Đã gắn cửa sổ Office vào vùng tài liệu."
-                    self.statusBar().showMessage(self.office_diagnostic)
-                    return
-        except Exception as exc:
-            self.office_diagnostic = f"Nhận diện cửa sổ: {exc}"
-            self._restore_office_window()
-        if attempt < 39:
-            QTimer.singleShot(300, lambda: self._attach_office_when_ready(
-                path, program, token, attempt=attempt + 1))
-        else:
-            if self.office_diagnostic == "Đang tìm cửa sổ Office.":
-                self.office_diagnostic = "Hết thời gian chờ: không tìm thấy cửa sổ Office khớp tên tài liệu."
-            self.statusBar().showMessage(self.office_diagnostic)
-
-    def _copy_office_diagnostic(self):
-        QApplication.clipboard().setText(f"TRIHX Office · Gắn vào tab v4\n{self.office_diagnostic}")
-        self.statusBar().showMessage("Đã sao chép chẩn đoán Office.")
-
-    def _set_office_caption(self, hidden):
-        self.settings.setValue("hideOfficeCaption", hidden)
-        self._align_office_window()
-
-    def _align_office_window(self):
-        if getattr(self, "office_window", None) is None or self.isMinimized():
+        source = self.file_path
+        name, _ = QFileDialog.getSaveFileName(self, "Chuyển PDF sang Word",
+                                             str(source.with_suffix(".docx")), "Tài liệu Word (*.docx)")
+        if not name:
             return
+        destination = Path(name)
+        if destination.suffix.lower() != ".docx":
+            QMessageBox.warning(self, "PDF sang Word", "Hãy lưu tệp với đuôi .docx.")
+            return
+        self.export_progress = QProgressDialog("Đang chuẩn bị chuyển đổi…", "", 0, len(self.document), self)
+        self.export_progress.setWindowTitle("PDF sang Word")
+        self.export_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.export_progress.setCancelButton(None)
+        self.export_progress.setAutoClose(False)
+        self.export_progress.setAutoReset(False)
+        self.word_export = WordExport(source, destination,
+                                      self.open_tabs[self.active_tab_key]["password"], self)
+        self.word_export.page.connect(self._show_export_page)
+        self.word_export.finished.connect(self._finish_word_export)
+        self._update_document_controls()
+        self.export_progress.show()
+        self.word_export.start()
+
+    def _show_export_page(self, index, count):
+        self.export_progress.setLabelText(f"Đang xử lý trang {index}/{count}…")
+        self.export_progress.setValue(index - 1)
+
+    def _finish_word_export(self):
+        worker = self.word_export
+        self.word_export = None
+        self.export_progress.close()
+        self.export_progress.deleteLater()
+        self._update_document_controls()
         try:
-            from ctypes import byref, c_void_p, windll
-            from ctypes.wintypes import RECT
-
-            host = int(self.scroll.winId())
-            size = RECT()
-            if not windll.user32.GetClientRect(c_void_p(host), byref(size)):
-                raise OSError("Không lấy được kích thước vùng tài liệu.")
-            self.office_window.dock(host, size.right, size.bottom, hide_title=self.hide_caption.isChecked())
-        except Exception as exc:
-            self.office_diagnostic = f"Gắn cửa sổ: {exc}"
-            self._restore_office_window()
-
-    def _detach_office_window(self):
-        self._office_open_token = None
-        self._restore_office_window()
-
-    def _restore_office_window(self):
-        window, self.office_window = self.office_window, None
-        if window is not None:
-            try:
-                window.restore()
-            except Exception:
-                pass
-
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.WindowStateChange and not self.isMinimized():
-            QTimer.singleShot(0, self._align_office_window)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        QTimer.singleShot(0, self._align_office_window)
-
-    def moveEvent(self, event):
-        super().moveEvent(event)
-        QTimer.singleShot(0, self._align_office_window)
+            if worker.error is not None:
+                QMessageBox.warning(self, "PDF sang Word", worker.error)
+                return
+            scans, unreadable = worker.result
+            detail = f"Đã lưu tệp Word:\n{worker.destination}"
+            if scans:
+                detail += f"\n\nĐã nhận dạng {len(scans)} trang scan. Hãy rà lại chữ tiếng Việt và bố cục."
+            if unreadable:
+                detail += "\nTrang chưa nhận dạng được chữ: " + ", ".join(map(str, unreadable))
+            QMessageBox.information(self, "PDF sang Word", detail)
+        finally:
+            worker.deleteLater()
 
     def verify_signatures(self):
         if self.file_path is None or self.document is None:
@@ -1211,12 +1164,11 @@ class PdfReaderWindow(QMainWindow):
         if self.document is not None:
             dialog = PdfPrintDialog(self.document, self.page_index, self.settings, self)
             dialog.exec()
-        elif self.file_path is not None:
-            self._open_office(self.file_path, printing=True)
 
     def closeEvent(self, event) -> None:
-        self._office_open_token = None
-        self._restore_office_window()
+        if self.word_export is not None:
+            event.ignore()
+            return
         self._clear_page_widgets()
         for state in self.open_tabs.values():
             try:
