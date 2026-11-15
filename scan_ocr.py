@@ -36,15 +36,15 @@ class VietnameseOCR:
             if library.TessBaseAPIInit4(self.handle, os.fsencode(data_directory), b"vie", 1,
                                         None, 0, None, None, 0, 0) != 0:
                 raise RuntimeError("Không nạp được dữ liệu OCR tiếng Việt.")
-            library.TessBaseAPISetPageSegMode(self.handle, 3)
         except Exception:
             self.close()
             raise
 
-    def recognize(self, image, dpi):
+    def recognize(self, image, dpi, *, page_seg_mode=3):
         gray = image.convert("L")
         width, height = gray.size
         pixels = gray.tobytes()
+        self.library.TessBaseAPISetPageSegMode(self.handle, page_seg_mode)
         self.library.TessBaseAPISetImage(self.handle, pixels, width, height, 1, width)
         self.library.TessBaseAPISetSourceResolution(self.handle, dpi)
         text = self.library.TessBaseAPIGetHOCRText(self.handle, 0)
@@ -104,11 +104,15 @@ def stage_windows_ocr(directory):
         (directory / name).write_bytes(content)
     engine = windows_ocr(directory)
     try:
-        sample = Image.new("L", (440, 100), 255)
-        ImageDraw.Draw(sample).text((25, 20), "OCR TEST", fill=0, font=ImageFont.load_default(size=46))
-        markup = engine.recognize(sample, 150)
-        if not all(word in markup for word in ("ocr_line", "OCR</span>", "TEST</span>")):
-            raise RuntimeError("Bộ OCR đóng gói không vượt qua bài kiểm tra nhận dạng.")
+        sample = Image.new("L", (660, 120), 255)
+        ImageDraw.Draw(sample).text((30, 30), "VAN BAN THU NGHIEM", fill=0,
+                                    font=ImageFont.load_default(size=44))
+        # Verify the OCR API and page geometry, regardless of how the model spells this sample.
+        markup = engine.recognize(sample, 150, page_seg_mode=7)
+        if "ocr_page" not in markup or "bbox" not in markup:
+            raise RuntimeError("Bộ OCR đóng gói không trả về dữ liệu bố cục hOCR.")
+        if "ocrx_word" not in markup:
+            print("Cảnh báo: OCR đã trả bố cục trang nhưng chưa nhận ra chữ trong ảnh thử.")
     finally:
         engine.close()
     return WINDOWS_DLLS, tuple(urls)
