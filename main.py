@@ -271,6 +271,25 @@ class PdfReaderWindow(QMainWindow):
         self._build_actions()
         self._set_empty_state()
         self._update_document_controls()
+        if sys.platform == "win32":
+            self._hide_windows_caption_brand()
+
+    def _hide_windows_caption_brand(self) -> None:
+        import pywintypes
+        import win32con
+        import win32gui
+
+        hwnd = int(self.winId())
+        try:
+            win32gui.SetWindowText(hwnd, "")
+            # Suppress the caption icon while keeping the window icon and system buttons.
+            style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, style | win32con.WS_EX_DLGMODALFRAME)
+            flags = (win32con.SWP_FRAMECHANGED | win32con.SWP_NOMOVE | win32con.SWP_NOSIZE |
+                     win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+            win32gui.SetWindowPos(hwnd, 0, 0, 0, 0, 0, flags)
+        except pywintypes.error:
+            pass
 
     def _build_ui(self) -> None:
         self.setStyleSheet("""
@@ -751,7 +770,6 @@ class PdfReaderWindow(QMainWindow):
         self.page_prev_button.setEnabled(len(self.document) > 1 and self.page_index > 0)
         self.page_next_button.setEnabled(self.page_index < len(self.document) - 1)
         self.print_button.setEnabled(True)
-        self.setWindowTitle(APP_NAME)
         self.render_page()
         self.statusBar().showMessage(f"{self.file_path.name}  •  {len(self.document)} trang  •  Tệp không rời khỏi máy tính")
 
@@ -805,7 +823,6 @@ class PdfReaderWindow(QMainWindow):
         self.page_prev_button.setEnabled(False)
         self.page_next_button.setEnabled(False)
         self._update_document_controls()
-        self.setWindowTitle(APP_NAME)
         if not self.pages_layout.count():
             self._set_empty_state()
 
