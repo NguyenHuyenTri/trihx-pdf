@@ -15,6 +15,7 @@ from docx.enum.section import WD_ORIENT, WD_SECTION
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
+from scan_layout import add_scan_page
 
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
 _PAGE_MARGIN = 24
@@ -40,10 +41,11 @@ def _ocr_engine():
     return executable
 
 
-def _ocr(image, engine):
+def _ocr(image, engine, dpi):
     buffer = BytesIO()
     image.save(buffer, format="PNG")
-    result = subprocess.run([engine, "stdin", "stdout", "--dpi", "300", "-l", "vie", "--psm", "3"],
+    result = subprocess.run([engine, "stdin", "stdout", "--dpi", str(dpi), "-l", "vie", "--psm", "3",
+                             "-c", "tessedit_create_hocr=1"],
                             input=buffer.getvalue(), capture_output=True, timeout=180,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     if result.returncode:
@@ -237,22 +239,21 @@ def convert_pdf(source_path, destination, *, password=None, progress=None):
                 if page.chars and any(str(char["text"]).strip() for char in page.chars):
                     _add_native_page(word, page, rendered, index, width - 2 * _PAGE_MARGIN)
                 elif page.images:
-                    dpi = min(300 / 72, 4000 / max(page.width, page.height))
+                    scale = min(350 / 72, 4000 / max(page.width, page.height))
+                    image = _render(rendered, index, scale)
+                    dpi = round(scale * 72)
                     if os.name == "nt" and getattr(sys, "frozen", False):
                         if engine is None:
                             from scan_ocr import windows_ocr
 
                             engine = windows_ocr()
                             stack.callback(engine.close)
-                        text = _text(engine.recognize(_render(rendered, index, dpi), round(dpi * 72))).strip()
+                        markup = engine.recognize(image, dpi)
                     else:
                         engine = engine or _ocr_engine()
-                        text = _ocr(_render(rendered, index, dpi), engine)
+                        markup = _ocr(image, engine, dpi)
                     scan_pages.append(index + 1)
-                    if text:
-                        for line in text.splitlines():
-                            word.add_paragraph(line)
-                    else:
+                    if not add_scan_page(word, markup, image.size, (width, height), _PAGE_MARGIN):
                         unreadable_pages.append(index + 1)
                         word.add_paragraph("[Không nhận dạng được chữ trên trang scan này.]")
                 else:

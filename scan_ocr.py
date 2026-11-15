@@ -22,7 +22,7 @@ class VietnameseOCR:
             ("TessBaseAPISetPageSegMode", None, [pointer, integer]),
             ("TessBaseAPISetImage", None, [pointer, string, integer, integer, integer, integer]),
             ("TessBaseAPISetSourceResolution", None, [pointer, integer]),
-            ("TessBaseAPIGetUTF8Text", pointer, [pointer]),
+            ("TessBaseAPIGetHOCRText", pointer, [pointer, integer]),
             ("TessDeleteText", None, [pointer]),
         ):
             function = getattr(library, name)
@@ -47,7 +47,7 @@ class VietnameseOCR:
         pixels = gray.tobytes()
         self.library.TessBaseAPISetImage(self.handle, pixels, width, height, 1, width)
         self.library.TessBaseAPISetSourceResolution(self.handle, dpi)
-        text = self.library.TessBaseAPIGetUTF8Text(self.handle)
+        text = self.library.TessBaseAPIGetHOCRText(self.handle, 0)
         if not text:
             raise RuntimeError("Bộ OCR không xử lý được ảnh của trang này.")
         try:
@@ -72,7 +72,7 @@ def windows_ocr(directory=None):
 
 def stage_windows_ocr(directory):
     """Download versioned Windows dependencies only when packaging the app."""
-    from hashlib import sha256
+    from hashlib import sha1
     from io import BytesIO
     from urllib.request import urlopen
     from zipfile import ZipFile
@@ -81,9 +81,9 @@ def stage_windows_ocr(directory):
     nuget = "https://api.nuget.org/v3-flatcontainer/tesseract/5.2.0/tesseract.5.2.0.nupkg"
     source = "https://raw.githubusercontent.com/tesseract-ocr"
     urls = {
-        MODEL: f"{source}/tessdata_fast/4.1.0/vie.traineddata",
+        MODEL: f"{source}/tessdata_best/4.1.0/vie.traineddata",
         "LICENSE-tesseract.txt": f"{source}/tesseract/5.2.0/LICENSE",
-        "LICENSE-tessdata.txt": f"{source}/tessdata_fast/4.1.0/LICENSE",
+        "LICENSE-tessdata.txt": f"{source}/tessdata_best/4.1.0/LICENSE",
         "LICENSE-leptonica.txt": "https://raw.githubusercontent.com/DanBloomberg/leptonica/1.82.0/leptonica-license.txt",
     }
     directory.mkdir(parents=True, exist_ok=True)
@@ -97,8 +97,8 @@ def stage_windows_ocr(directory):
     for name, url in urls.items():
         with urlopen(url, timeout=60) as response:
             content = response.read()
-        if name == MODEL and sha256(content).hexdigest() != (
-            "79df64caf7bcfb2a27df5042ecb6121e196eada34da774956995747636d5bfa1"
+        if name == MODEL and sha1(f"blob {len(content)}\0".encode() + content).hexdigest() != (
+            "28bc301dc848861eb6ba734b866152b2a04732fc"
         ):
             raise RuntimeError("Dữ liệu OCR tiếng Việt tải về không đúng phiên bản.")
         (directory / name).write_bytes(content)
@@ -106,7 +106,8 @@ def stage_windows_ocr(directory):
     try:
         sample = Image.new("L", (440, 100), 255)
         ImageDraw.Draw(sample).text((25, 20), "OCR TEST", fill=0, font=ImageFont.load_default(size=46))
-        if "OCR TEST" not in engine.recognize(sample, 150):
+        markup = engine.recognize(sample, 150)
+        if not all(word in markup for word in ("ocr_line", "OCR</span>", "TEST</span>")):
             raise RuntimeError("Bộ OCR đóng gói không vượt qua bài kiểm tra nhận dạng.")
     finally:
         engine.close()
