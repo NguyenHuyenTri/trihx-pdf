@@ -257,8 +257,9 @@ class PdfReaderWindow(QMainWindow):
             self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(self._toolbar_icon("brand"))
-        self.resize(1180, 820)
-        self.setMinimumSize(760, 560)
+        work_area = self.screen().availableSize()
+        self.setMinimumSize(QSize(760, 560).boundedTo(work_area))
+        self.resize(QSize(1180, 820).boundedTo(work_area * 0.9))
         self.document = None
         self.file_path: Path | None = None
         self.page_index = 0
@@ -1334,7 +1335,7 @@ def main() -> int:
     clean_old_downloads()
     app.setWindowIcon(QIcon(str(resource_path("app_icon.png"))))
     window = PdfReaderWindow()
-    window.show()
+    window.showMaximized()
     candidates = [
         Path(argument.strip('"'))
         for argument in input_files

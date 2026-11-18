@@ -1,4 +1,5 @@
-PySide6>=6.8,<7
+# Qt 6.12 respects the Windows taskbar for frameless maximized windows (QTBUG-129791).
+PySide6>=6.12,<6.13
 pypdfium2>=4.30,<5
 Pillow>=10,<13
 pywin32>=306; sys_platform == "win32"

@@ -61,15 +61,32 @@ jobs:
           $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\TRIHX.Office.Windows_is1'
           if ((Get-ItemProperty $key).DisplayVersion -ne $env:RELEASE_VERSION) { throw 'Installed version mismatch' }
           $exe = Join-Path $installDir 'HX PDF.exe'
-          Start-Process -FilePath $exe
-          $deadline = (Get-Date).AddSeconds(90)
-          do {
-            Start-Sleep -Seconds 1
-            $window = Get-Process -Name 'HX PDF' -ErrorAction SilentlyContinue |
-              Where-Object { $_.Path -eq $exe -and $_.MainWindowTitle -eq 'TRIHX PDF' } | Select-Object -First 1
-          } until ($window -or (Get-Date) -gt $deadline)
-          if (-not $window) { throw 'The installed reader did not open its main window' }
-          $null = $window.CloseMainWindow()
+          $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'TRIHX PDF\TRIHX PDF.lnk'
+          $sample = Join-Path $env:RUNNER_TEMP 'Window startup test.pdf'
+          python -c "import sys; from PIL import Image; Image.new('RGB', (120, 160), 'white').save(sys.argv[1])" $sample
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create the sample PDF' }
+          foreach ($document in @('', $sample)) {
+            if ($document) {
+              python -c "import sys; from win32com.shell import shell, shellcon; shell.ShellExecuteEx(fMask=shellcon.SEE_MASK_CLASSNAME, lpClass='HXPDF.Document', lpVerb='open', lpFile=sys.argv[1], nShow=1)" $document
+              if ($LASTEXITCODE -ne 0) { throw 'Could not open the PDF with the registered reader' }
+            } else {
+              Start-Process -FilePath $shortcut
+            }
+            $deadline = (Get-Date).AddSeconds(90)
+            do {
+              Start-Sleep -Seconds 1
+              $window = Get-Process -Name 'HX PDF' -ErrorAction SilentlyContinue |
+                Where-Object { $_.Path -eq $exe -and $_.MainWindowTitle -eq 'TRIHX PDF' } | Select-Object -First 1
+            } until ($window -or (Get-Date) -gt $deadline)
+            if (-not $window) { throw 'The installed reader did not open its main window' }
+            try {
+              python tests/check_window_placement.py $window.MainWindowHandle $document
+              if ($LASTEXITCODE -ne 0) { throw 'Window placement check failed' }
+            } finally {
+              $null = $window.CloseMainWindow()
+              if (-not $window.WaitForExit(15000)) { throw 'The reader did not close' }
+            }
+          }
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
