@@ -95,9 +95,8 @@ _STYLES = Template("""
     QPushButton#fileAction { background: transparent; border: 0; padding: 5px 10px; }
     QPushButton#fileAction:hover { background: $hover; }
     QToolButton#officeBrand { background: $tab; border: 0; font-weight: bold; padding: 5px 10px; }
-    QToolButton#themeButton { color: $title_text; background: transparent; border: 1px solid transparent; padding: 4px 14px 4px 8px; }
-    QToolButton#themeButton:focus { border-color: $title_text; }
-    QToolButton#themeButton:hover, QToolButton#themeButton:pressed { background: $title_hover; }
+    QToolButton#settingsButton { color: $title_text; background: $title_hover; border: 1px solid transparent; padding: 4px 9px; }
+    QToolButton#settingsButton:focus, QToolButton#settingsButton:hover { border-color: $title_text; }
     QToolButton[captionButton="true"] { background: transparent; border: 0; border-radius: 0; padding: 0; }
     QToolButton[captionButton="true"]:hover { background: $title_hover; }
     QToolButton#captionClose:hover { background: $close_hover; }
@@ -114,8 +113,8 @@ _STYLES = Template("""
     QMenu::item:selected { background: $accent; color: $accent_text; }
     QMenu::item:disabled { color: $disabled; }
     QStatusBar { background: $surface; color: $muted; border-top: 1px solid $border; }
-    QToolButton#updateButton { background: transparent; border: 0; padding: 1px 8px; }
-    QToolButton#updateButton:hover { background: $hover; }
+    QDialog#readerSettings QGroupBox { background: $surface; color: $text; border: 1px solid $border; border-radius: 8px; margin-top: 8px; }
+    QDialog#readerSettings QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; }
     QDialog#recentPopup { background: $surface; border: 1px solid $border; border-radius: 8px; }
     QListWidget#recentList { background: $surface; border: 0; }
     QListWidget#recentList::item { border-bottom: 1px solid $border; }

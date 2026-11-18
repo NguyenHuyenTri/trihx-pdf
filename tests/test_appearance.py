@@ -6,9 +6,10 @@ from unittest.mock import patch
 from PIL import Image, ImageDraw
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QColor, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QGroupBox, QToolButton
 
 from appearance import DEFAULT_CUSTOM_COLOR, read_appearance, theme_colors
+from app_update import APP_VERSION
 from main import PdfReaderWindow
 from print_dialog import PaperPreview
 
@@ -29,36 +30,51 @@ class AppearanceTests(unittest.TestCase):
     def open_reader(self):
         reader = PdfReaderWindow()
         self.addCleanup(reader.close)
+        self.addCleanup(lambda: reader.settings_dialog and reader.settings_dialog.reject())
         reader.show()
         self.app.processEvents()
         return reader
 
-    def test_menu_changes_visible_chrome_and_remembers_custom_color(self):
+    def test_settings_dialog_changes_visible_chrome_and_remembers_custom_color(self):
         reader = self.reader
         reader.resize(reader.minimumSize())
         self.app.processEvents()
-        self.assertTrue(reader.theme_button.isVisibleTo(reader))
-        self.assertTrue(reader.menuWidget().rect().contains(reader.theme_button.geometry()))
-        self.assertEqual([action.text() for action in reader.theme_button.menu().actions()],
-                         ["Sáng", "Tối", "Màu tùy chọn…"])
-        self.assertTrue(reader.theme_actions["light"].isChecked())
-        reader.theme_actions["dark"].trigger()
+        self.assertEqual(reader.settings_button.text(), "Cài đặt")
+        self.assertTrue(reader.settings_button.isVisibleTo(reader))
+        self.assertTrue(reader.menuWidget().rect().contains(reader.settings_button.geometry()))
+        self.assertIsNone(reader.settings_button.menu())
+        self.assertIsNone(reader.statusBar().findChild(QToolButton, "updateButton"))
+        reader.settings_button.click()
+        dialog = reader.settings_dialog
+        self.assertTrue(dialog.isModal())
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(dialog.windowTitle(), "Cài đặt TRIHX PDF")
+        self.assertEqual([box.title() for box in dialog.findChildren(QGroupBox)], ["Giao diện", "Cập nhật"])
+        self.assertIn(APP_VERSION, dialog.version_label.text())
+        self.assertEqual(dialog.action.text(), "Kiểm tra cập nhật")
+        self.assertTrue(dialog.theme_buttons["light"].isChecked())
+        dialog.theme_buttons["dark"].click()
         self.assertEqual(self.app.palette().window().color().name(), reader.colors["canvas"])
         self.assertEqual(reader.menuWidget().grab().toImage().pixelColor(2, 4).name(), reader.colors["title"])
 
-        with patch("main.QColorDialog.getColor", return_value=QColor("#d2aa35")):
-            reader.theme_actions["custom"].trigger()
+        with patch("settings_dialog.QColorDialog.getColor", return_value=QColor("#d2aa35")):
+            dialog.theme_buttons["custom"].click()
         self.assertEqual(reader.menuWidget().grab().toImage().pixelColor(2, 4).name(), "#d2aa35")
         self.assertEqual(self.app.palette().color(QPalette.ColorRole.Accent).name(), "#d2aa35")
+        dialog.dismiss.click()
+        self.assertIsNone(reader.settings_dialog)
+        self.assertTrue(reader.isVisible())
         reader.close()
         reopened = self.open_reader()
-        self.assertTrue(reopened.theme_actions["custom"].isChecked())
+        reopened.settings_button.click()
+        dialog = reopened.settings_dialog
+        self.assertTrue(dialog.theme_buttons["custom"].isChecked())
         self.assertEqual((reopened.theme_mode, reopened.colors["title"]), ("custom", "#d2aa35"))
-        reopened.theme_actions["light"].trigger()
-        with patch("main.QColorDialog.getColor", return_value=QColor()) as picker:
-            reopened.theme_actions["custom"].trigger()
+        dialog.theme_buttons["light"].click()
+        with patch("settings_dialog.QColorDialog.getColor", return_value=QColor()) as picker:
+            dialog.theme_buttons["custom"].click()
         self.assertEqual(picker.call_args.args[0].name(), "#d2aa35")
-        self.assertTrue(reopened.theme_actions["light"].isChecked())
+        self.assertTrue(dialog.theme_buttons["light"].isChecked())
         self.assertEqual(read_appearance(reopened.settings), ("light", "#d2aa35"))
 
     def test_open_pdf_and_print_paper_keep_their_colors(self):
@@ -72,7 +88,9 @@ class AppearanceTests(unittest.TestCase):
         paper = page.grab().toImage()
         red = paper.pixelColor(paper.width() // 2, paper.height() // 2)
         self.assertGreater(red.red(), 2 * red.green())
-        self.reader.theme_actions["dark"].trigger()
+        self.reader.settings_button.click()
+        self.reader.settings_dialog.theme_buttons["dark"].click()
+        self.reader.settings_dialog.dismiss.click()
         self.assertIs(self.reader.page_labels[0], page)
         self.assertTrue(self.reader.file_path.samefile(path))
         dark_paper = page.grab().toImage()

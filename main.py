@@ -8,14 +8,13 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 from PySide6.QtCore import Qt, QSize, QTimer, QSettings, QPoint, QEvent, QThread, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QImage, QIntValidator, QKeySequence, QPainter, QPen, QPixmap, QShortcut
-from appearance import MODES, apply_appearance, read_appearance
+from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QIntValidator, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from appearance import apply_appearance, read_appearance
 from print_dialog import PdfPrintDialog
 from app_update import APP_VERSION
-from update_dialog import UpdateDialog, clean_old_downloads
+from settings_dialog import SettingsDialog, clean_old_downloads
 from PySide6.QtWidgets import (
     QApplication,
-    QColorDialog,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -274,7 +273,7 @@ class PdfReaderWindow(QMainWindow):
         self.active_tab_key: str | None = None
         self._tab_change_blocked = False
         self.word_export = None
-        self.update_dialog = None
+        self.settings_dialog = None
         self.recent_files: list[dict[str, str | float]] = self._load_recent_files()
         self._build_ui()
         self._build_actions()
@@ -452,12 +451,6 @@ class PdfReaderWindow(QMainWindow):
         self.recent_popup.resize(720, 600)
         self.setCentralWidget(self.scroll)
         self.setStatusBar(QStatusBar())
-        self.update_button = QToolButton()
-        self.update_button.setText("Cập nhật")
-        self.update_button.setToolTip(f"Kiểm tra phiên bản mới · TRIHX PDF {APP_VERSION}")
-        self.update_button.setObjectName("updateButton")
-        self.update_button.clicked.connect(self._check_updates)
-        self.statusBar().addPermanentWidget(self.update_button)
 
     def _build_document_title_bar(self) -> None:
         row = QWidget()
@@ -475,26 +468,15 @@ class PdfReaderWindow(QMainWindow):
             layout.addWidget(self.title_drag_area, 1)
         else:
             layout.addStretch(1)
-        self.theme_button = QToolButton(row)
-        self.theme_button.setObjectName("themeButton")
-        self.theme_button.setText("Giao diện")
-        self.theme_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
-        self.theme_button.setToolTip(f"Chọn màu giao diện · TRIHX PDF {APP_VERSION}")
-        self.theme_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        menu = QMenu(self.theme_button)
-        group = QActionGroup(menu)
-        group.setExclusive(True)
-        self.theme_actions = {}
-        for mode, label in MODES.items():
-            action = menu.addAction(label)
-            action.setCheckable(True)
-            action.setData(mode)
-            group.addAction(action)
-            action.setChecked(mode == self.theme_mode)
-            self.theme_actions[mode] = action
-        group.triggered.connect(self._choose_theme)
-        self.theme_button.setMenu(menu)
-        layout.addWidget(self.theme_button)
+        self.settings_button = QToolButton(row)
+        self.settings_button.setObjectName("settingsButton")
+        self.settings_button.setText("Cài đặt")
+        self.settings_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.settings_button.setIcon(self._toolbar_icon("settings", caption=True))
+        self.settings_button.setIconSize(QSize(17, 17))
+        self.settings_button.setToolTip("Giao diện và cập nhật TRIHX PDF")
+        self.settings_button.clicked.connect(self._open_settings)
+        layout.addWidget(self.settings_button)
         self.caption_buttons = {}
         if self._combined_title_bar:
             controls = QHBoxLayout()
@@ -519,22 +501,17 @@ class PdfReaderWindow(QMainWindow):
             layout.addLayout(controls)
         self.setMenuWidget(row)
 
-    def _choose_theme(self, action):
-        mode = action.data()
-        if mode == "custom":
-            color = QColorDialog.getColor(QColor(self.custom_color), self, "Chọn màu giao diện",
-                                          QColorDialog.ColorDialogOption.DontUseNativeDialog)
-            if not color.isValid():
-                self.theme_actions[self.theme_mode].setChecked(True)
-                return
-            self.custom_color = color.name()
-            self.settings.setValue("appearance/customColor", self.custom_color)
+    def _set_appearance(self, mode, custom_color):
         self.theme_mode = mode
-        self.colors = apply_appearance(QApplication.instance(), mode, self.custom_color)
+        self.custom_color = custom_color
+        if mode == "custom":
+            self.settings.setValue("appearance/customColor", custom_color)
+        self.colors = apply_appearance(QApplication.instance(), mode, custom_color)
         self.settings.setValue("appearance/mode", mode)
         self.settings.sync()
         for name, button in (("open", self.open_button), ("recent", self.recent_button), ("print", self.print_button)):
             button.setIcon(self._toolbar_icon(name))
+        self.settings_button.setIcon(self._toolbar_icon("settings", caption=True))
         close_icon = self._toolbar_icon("close")
         for button in self.tab_bar.findChildren(QToolButton, "tabClose"):
             button.setIcon(close_icon)
@@ -1166,7 +1143,7 @@ class PdfReaderWindow(QMainWindow):
             action.setVisible(self.document is not None)
         self.print_button.setEnabled(self.file_path is not None)
         self.export_button.setEnabled(self.document is not None and self.word_export is None)
-        self.update_button.setEnabled(self.word_export is None)
+        self.settings_button.setEnabled(self.word_export is None)
 
     @staticmethod
     def _file_icon():
@@ -1215,6 +1192,11 @@ class PdfReaderWindow(QMainWindow):
             elif kind == "restore":
                 painter.drawRect(4, 8, 12, 12)
                 painter.drawPolyline([QPoint(8, 7), QPoint(8, 4), QPoint(20, 4), QPoint(20, 16), QPoint(17, 16)])
+            elif kind == "settings":
+                painter.setBrush(QColor(self.colors["title_hover"]))
+                for y, knob_x in ((5, 8), (12, 16), (19, 10)):
+                    painter.drawLine(2, y, 22, y)
+                    painter.drawEllipse(QPoint(knob_x, y), 2, 2)
             else:
                 painter.drawRoundedRect(2, 8, 20, 10, 2, 2)
                 painter.fillRect(6, 13, 12, 9, QColor(self.colors["toolbar"]))
@@ -1273,20 +1255,24 @@ class PdfReaderWindow(QMainWindow):
                                     document_path=self.file_path)
             dialog.exec()
 
-    def _check_updates(self) -> None:
-        if self.word_export is not None or self.update_dialog is not None:
+    def _open_settings(self) -> None:
+        if self.word_export is not None or self.settings_dialog is not None:
             return
-        self.update_dialog = UpdateDialog(self)
-        try:
-            install_started = self.update_dialog.exec() == QDialog.DialogCode.Accepted
-        finally:
-            self.update_dialog.deleteLater()
-            self.update_dialog = None
-        if install_started:
+        dialog = SettingsDialog(self.theme_mode, self.custom_color, self)
+        self.settings_dialog = dialog
+        dialog.appearance_changed.connect(self._set_appearance)
+        dialog.finished.connect(self._settings_closed)
+        dialog.open()
+
+    def _settings_closed(self, _result) -> None:
+        dialog = self.settings_dialog
+        self.settings_dialog = None
+        dialog.deleteLater()
+        if dialog.install_started:
             self.close()
 
     def closeEvent(self, event) -> None:
-        if self.word_export is not None or self.update_dialog is not None:
+        if self.word_export is not None or self.settings_dialog is not None:
             event.ignore()
             return
         self._clear_page_widgets()

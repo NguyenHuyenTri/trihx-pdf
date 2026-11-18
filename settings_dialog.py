@@ -3,10 +3,15 @@ from http.client import HTTPException
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
-from PySide6.QtCore import QStandardPaths, QThread, Signal
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout
+from PySide6.QtCore import QStandardPaths, Qt, QThread, Signal
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QButtonGroup, QColorDialog, QDialog, QGroupBox, QHBoxLayout, QLabel,
+    QProgressBar, QPushButton, QRadioButton, QVBoxLayout,
+)
 
 from app_update import APP_VERSION, check_for_update, download_installer, launch_installer
+from appearance import MODES
 
 
 class UpdateJob(QThread):
@@ -50,34 +55,84 @@ def clean_old_downloads():
         pass
 
 
-class UpdateDialog(QDialog):
-    def __init__(self, parent):
+class SettingsDialog(QDialog):
+    appearance_changed = Signal(str, str)
+
+    def __init__(self, mode, custom_color, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Cập nhật TRIHX PDF")
-        self.setMinimumWidth(380)
+        self.setObjectName("readerSettings")
+        self.setWindowTitle("Cài đặt TRIHX PDF")
+        self.setWindowModality(Qt.WindowModality.WindowModal)
+        self.setMinimumWidth(440)
+        self.theme_mode = mode
+        self.custom_color = custom_color
         self.release = None
         self.installer = None
+        self.install_started = False
         self.job = None
         self.cancelling = False
-        self.status = QLabel()
-        self.status.setWordWrap(True)
-        self.bar = QProgressBar()
-        self.action = QPushButton()
-        self.action.clicked.connect(self._next)
-        self.dismiss = QPushButton("Hủy")
-        self.dismiss.clicked.connect(self.reject)
-        buttons = QHBoxLayout()
-        buttons.addStretch()
-        buttons.addWidget(self.dismiss)
-        buttons.addWidget(self.action)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"Phiên bản đang dùng  {APP_VERSION}"))
-        layout.addWidget(self.status)
-        layout.addWidget(self.bar)
-        layout.addLayout(buttons)
-        self._next()
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(14)
+
+        appearance = QGroupBox("Giao diện")
+        choices = QHBoxLayout(appearance)
+        choices.setContentsMargins(14, 14, 14, 12)
+        choices.setSpacing(16)
+        group = QButtonGroup(self)
+        self.theme_buttons = {}
+        for key, label in MODES.items():
+            button = QRadioButton(label)
+            button.setProperty("mode", key)
+            group.addButton(button)
+            button.setChecked(key == mode)
+            choices.addWidget(button)
+            self.theme_buttons[key] = button
+        choices.addStretch()
+        group.buttonClicked.connect(self._choose_theme)
+        layout.addWidget(appearance)
+
+        updates = QGroupBox("Cập nhật")
+        panel = QVBoxLayout(updates)
+        panel.setContentsMargins(14, 14, 14, 12)
+        version_row = QHBoxLayout()
+        self.version_label = QLabel(f"Phiên bản đang dùng   {APP_VERSION}")
+        version_row.addWidget(self.version_label)
+        version_row.addStretch()
+        self.action = QPushButton("Kiểm tra cập nhật")
+        self.action.setAutoDefault(False)
+        self.action.clicked.connect(self._next)
+        version_row.addWidget(self.action)
+        panel.addLayout(version_row)
+        self.status = QLabel()
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
+        self.status.setWordWrap(True)
+        self.status.hide()
+        panel.addWidget(self.status)
+        self.bar = QProgressBar()
+        self.bar.hide()
+        panel.addWidget(self.bar)
+        layout.addWidget(updates)
+
+        self.dismiss = QPushButton("Đóng")
+        self.dismiss.clicked.connect(self.reject)
+        layout.addWidget(self.dismiss, alignment=Qt.AlignmentFlag.AlignRight)
+
+    def _choose_theme(self, button):
+        mode = button.property("mode")
+        if mode == "custom":
+            color = QColorDialog.getColor(QColor(self.custom_color), self, "Chọn màu giao diện",
+                                          QColorDialog.ColorDialogOption.DontUseNativeDialog)
+            if not color.isValid():
+                self.theme_buttons[self.theme_mode].setChecked(True)
+                return
+            self.custom_color = color.name()
+        self.theme_mode = mode
+        self.appearance_changed.emit(mode, self.custom_color)
 
     def _next(self):
+        if self.job is not None:
+            return
         if self.installer is not None:
             try:
                 launch_installer(self.installer)
@@ -85,16 +140,18 @@ class UpdateDialog(QDialog):
                 self.status.setText(f"Windows chưa mở được bộ cài. {exc}")
                 return
             self.installer = None
+            self.install_started = True
             self.accept()
             return
         checking = self.release is None
         self.status.setText("Đang kiểm tra phiên bản…" if checking else
                             f"Đang tải TRIHX PDF {self.release.version}…")
+        self.status.show()
         self.bar.setRange(0, 0 if checking else 100)
         self.bar.setValue(0)
         self.bar.show()
         self.action.hide()
-        self.dismiss.setText("Hủy")
+        self.dismiss.setText("Hủy và đóng")
         self.job = UpdateJob(self.release, cache_directory(), self)
         self.job.progress.connect(self.bar.setValue)
         self.job.finished.connect(self._finished)
@@ -116,11 +173,11 @@ class UpdateDialog(QDialog):
             self.status.setText(error)
             self.action.setText("Thử lại")
         elif self.installer:
-            self.status.setText("Đã tải và kiểm tra bộ cài. Bấm Cài đặt để đóng các tab PDF và mở bộ cài Windows.")
-            self.action.setText("Cài đặt")
+            self.status.setText("Đã tải và kiểm tra bộ cài. Bấm Cài bản mới để đóng các tab PDF và mở bộ cài Windows.")
+            self.action.setText("Cài bản mới")
         elif result is None:
             self.status.setText("Bạn đang dùng phiên bản mới nhất hiện có.")
-            return
+            self.action.setText("Kiểm tra lại")
         else:
             self.release = result
             size_mb = self.release.size / (1024 * 1024)
