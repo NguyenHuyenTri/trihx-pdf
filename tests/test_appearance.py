@@ -74,7 +74,7 @@ class AppearanceTests(unittest.TestCase):
         self.assertGreater(red.red(), 2 * red.green())
         self.reader.theme_actions["dark"].trigger()
         self.assertIs(self.reader.page_labels[0], page)
-        self.assertEqual(self.reader.file_path, path)
+        self.assertTrue(self.reader.file_path.samefile(path))
         dark_paper = page.grab().toImage()
         self.assertEqual(dark_paper.pixelColor(paper.width() // 2, paper.height() // 2), red)
         self.assertEqual(dark_paper.pixelColor(10, 10).name(), "#ffffff")
