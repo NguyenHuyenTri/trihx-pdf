@@ -8,12 +8,14 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 from PySide6.QtCore import Qt, QSize, QTimer, QSettings, QPoint, QEvent, QThread, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QIntValidator, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QImage, QIntValidator, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from appearance import MODES, apply_appearance, read_appearance
 from print_dialog import PdfPrintDialog
 from app_update import APP_VERSION
 from update_dialog import UpdateDialog, clean_old_downloads
 from PySide6.QtWidgets import (
     QApplication,
+    QColorDialog,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -31,7 +33,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QStatusBar,
-    QStyle,
     QTabBar,
     QToolBar,
     QToolButton,
@@ -69,7 +70,7 @@ class PdfPageLabel(QLabel):
         self._char_boxes: dict[int, tuple[float, float, float, float]] = {}
         self._dragging = False
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setStyleSheet("background: white; border: 1px solid #d6dde7;")
+        self.setObjectName("pdfPage")
         self.setFixedSize(ceil(page.get_width() * scale), ceil(page.get_height() * scale))
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._copy_shortcuts = []
@@ -249,6 +250,9 @@ class WordExport(QThread):
 class PdfReaderWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
+        self.settings = QSettings("TRIHX", "HX PDF")
+        self.theme_mode, self.custom_color = read_appearance(self.settings)
+        self.colors = apply_appearance(QApplication.instance(), self.theme_mode, self.custom_color)
         self._combined_title_bar = sys.platform == "win32"
         if self._combined_title_bar:
             self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
@@ -271,7 +275,6 @@ class PdfReaderWindow(QMainWindow):
         self._tab_change_blocked = False
         self.word_export = None
         self.update_dialog = None
-        self.settings = QSettings("TRIHX", "HX PDF")
         self.recent_files: list[dict[str, str | float]] = self._load_recent_files()
         self._build_ui()
         self._build_actions()
@@ -279,39 +282,17 @@ class PdfReaderWindow(QMainWindow):
         self._update_document_controls()
 
     def _build_ui(self) -> None:
-        self.setStyleSheet("""
-            QMainWindow { background: #eef2f7; }
-            QToolBar { background: #e9edf5; border: 0; border-bottom: 1px solid #cbd5e3; spacing: 5px; padding: 5px 9px; }
-            QWidget#documentTabs { background: #e1e7f2; border-bottom: 1px solid #cbd5e3; }
-            QToolButton[captionButton="true"] { background: transparent; border: 0; border-radius: 0; padding: 0; }
-            QToolButton[captionButton="true"]:hover { background: #d0d9e7; }
-            QToolButton#captionClose:hover { background: #f4b7bc; }
-            QPushButton#fileAction { background: transparent; border: 0; padding: 5px 10px; }
-            QPushButton#fileAction:hover { background: #d7e0ef; }
-            QToolButton#officeBrand { background: #d5deec; border: 0; font-weight: bold; padding: 5px 10px; }
-            QToolButton, QPushButton { color: #26354a; background: #ffffff; border: 1px solid #d7e0eb; border-radius: 8px; padding: 7px 12px; }
-            QToolButton:hover, QPushButton:hover { background: #f0f6ff; border-color: #9bbce8; }
-            QLineEdit { color: #26354a; background: white; border: 1px solid #d7e0eb; border-radius: 7px; padding: 5px 4px; }
-            QTabBar::tab { background: #d7dfec; color: #34445a; padding: 4px 8px; margin-right: 4px; max-width: 220px; border: 1px solid transparent; border-radius: 7px; }
-            QTabBar::tab:selected { background: #f8fbff; color: #14253c; border-color: #a7bedf; }
-            QTabBar::tab:hover { background: #f7f9fc; }
-            QTabBar QToolButton { padding: 0; border-radius: 0; }
-            QToolButton#tabClose { background: transparent; border: 0; border-radius: 5px; padding: 0; }
-            QToolButton#tabClose:hover { background: #c7d3e4; }
-            QStatusBar { background: #ffffff; border-top: 1px solid #dce3ec; color: #536276; }
-        """)
-
         file_toolbar = QToolBar("Tệp")
         file_toolbar.setMovable(False)
         file_toolbar.setFloatable(False)
         self.addToolBar(file_toolbar)
 
-        open_button = QPushButton("Open")
-        open_button.setObjectName("fileAction")
-        open_button.setIcon(self._toolbar_icon("open"))
-        open_button.setIconSize(QSize(20, 20))
-        open_button.clicked.connect(self.open_dialog)
-        file_toolbar.addWidget(open_button)
+        self.open_button = QPushButton("Open")
+        self.open_button.setObjectName("fileAction")
+        self.open_button.setIcon(self._toolbar_icon("open"))
+        self.open_button.setIconSize(QSize(20, 20))
+        self.open_button.clicked.connect(self.open_dialog)
+        file_toolbar.addWidget(self.open_button)
         self.recent_button = QPushButton("Recent")
         self.recent_button.setObjectName("fileAction")
         self.recent_button.setIcon(self._toolbar_icon("recent"))
@@ -429,10 +410,11 @@ class PdfReaderWindow(QMainWindow):
         self.file_toolbar = file_toolbar
 
         self.scroll = QScrollArea()
+        self.scroll.setObjectName("documentScroll")
         self.scroll.setWidgetResizable(True)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
-        self.scroll.setStyleSheet("QScrollArea { border: 0; background: #e8edf4; }")
         self.pages_widget = QWidget()
+        self.pages_widget.setObjectName("documentCanvas")
         self.pages_layout = QVBoxLayout(self.pages_widget)
         self.pages_layout.setContentsMargins(20, 20, 20, 20)
         self.pages_layout.setSpacing(18)
@@ -443,13 +425,13 @@ class PdfReaderWindow(QMainWindow):
         self.scroll.verticalScrollBar().valueChanged.connect(self._sync_page_from_scroll)
 
         self.recent_popup = QDialog(self, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self.recent_popup.setStyleSheet("QDialog { background: #ffffff; border: 1px solid #cfd7e2; border-radius: 8px; }")
+        self.recent_popup.setObjectName("recentPopup")
         recent_layout = QVBoxLayout(self.recent_popup)
         recent_layout.setContentsMargins(12, 10, 12, 10)
         recent_layout.setSpacing(6)
         recent_header = QHBoxLayout()
         recent_title = QLabel("Recent")
-        recent_title.setStyleSheet("font-size: 16px; font-weight: 600; color: #26354a; border: none;")
+        recent_title.setObjectName("recentTitle")
         recent_header.addWidget(recent_title)
         recent_header.addStretch(1)
         refresh_recent = QToolButton()
@@ -463,7 +445,7 @@ class PdfReaderWindow(QMainWindow):
         recent_header.addWidget(close_recent)
         recent_layout.addLayout(recent_header)
         self.recent_list = QListWidget()
-        self.recent_list.setStyleSheet("QListWidget { border: 0; } QListWidget::item { border-bottom: 1px solid #edf0f4; }")
+        self.recent_list.setObjectName("recentList")
         self.recent_list.itemClicked.connect(self._open_recent_item)
         recent_layout.addWidget(self.recent_list, 1)
         self._refresh_recent_list()
@@ -473,8 +455,7 @@ class PdfReaderWindow(QMainWindow):
         self.update_button = QToolButton()
         self.update_button.setText("Cập nhật")
         self.update_button.setToolTip(f"Kiểm tra phiên bản mới · TRIHX PDF {APP_VERSION}")
-        self.update_button.setStyleSheet("QToolButton { background: transparent; border: 0; padding: 1px 8px; }"
-                                        "QToolButton:hover { background: #e8edf4; }")
+        self.update_button.setObjectName("updateButton")
         self.update_button.clicked.connect(self._check_updates)
         self.statusBar().addPermanentWidget(self.update_button)
 
@@ -492,30 +473,74 @@ class PdfReaderWindow(QMainWindow):
             self.title_drag_area.setMinimumWidth(32)
             self.title_drag_area.installEventFilter(self)
             layout.addWidget(self.title_drag_area, 1)
+        else:
+            layout.addStretch(1)
+        self.theme_button = QToolButton(row)
+        self.theme_button.setObjectName("themeButton")
+        self.theme_button.setText("Giao diện")
+        self.theme_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.theme_button.setToolTip(f"Chọn màu giao diện · TRIHX PDF {APP_VERSION}")
+        self.theme_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self.theme_button)
+        group = QActionGroup(menu)
+        group.setExclusive(True)
+        self.theme_actions = {}
+        for mode, label in MODES.items():
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setData(mode)
+            group.addAction(action)
+            action.setChecked(mode == self.theme_mode)
+            self.theme_actions[mode] = action
+        group.triggered.connect(self._choose_theme)
+        self.theme_button.setMenu(menu)
+        layout.addWidget(self.theme_button)
+        self.caption_buttons = {}
+        if self._combined_title_bar:
             controls = QHBoxLayout()
             controls.setSpacing(0)
             for icon, label, action in (
-                (QStyle.StandardPixmap.SP_TitleBarMinButton, "Thu nhỏ", self.showMinimized),
-                (QStyle.StandardPixmap.SP_TitleBarMaxButton, "Phóng to", self._toggle_maximized),
-                (QStyle.StandardPixmap.SP_TitleBarCloseButton, "Đóng", self.close),
+                ("minimize", "Thu nhỏ", self.showMinimized),
+                ("maximize", "Phóng to", self._toggle_maximized),
+                ("close", "Đóng", self.close),
             ):
                 button = QToolButton(row)
                 button.setProperty("captionButton", True)
-                button.setIcon(self.style().standardIcon(icon))
+                button.setIcon(self._toolbar_icon(icon, caption=True))
                 button.setIconSize(QSize(14, 14))
                 button.setFixedSize(46, 40)
                 button.setToolTip(label)
                 button.setAccessibleName(label)
                 button.clicked.connect(action)
                 controls.addWidget(button)
-                if icon == QStyle.StandardPixmap.SP_TitleBarMaxButton:
-                    self.maximize_button = button
-                elif icon == QStyle.StandardPixmap.SP_TitleBarCloseButton:
+                self.caption_buttons[icon] = button
+                if icon == "close":
                     button.setObjectName("captionClose")
             layout.addLayout(controls)
-        else:
-            layout.addStretch(1)
         self.setMenuWidget(row)
+
+    def _choose_theme(self, action):
+        mode = action.data()
+        if mode == "custom":
+            color = QColorDialog.getColor(QColor(self.custom_color), self, "Chọn màu giao diện",
+                                          QColorDialog.ColorDialogOption.DontUseNativeDialog)
+            if not color.isValid():
+                self.theme_actions[self.theme_mode].setChecked(True)
+                return
+            self.custom_color = color.name()
+            self.settings.setValue("appearance/customColor", self.custom_color)
+        self.theme_mode = mode
+        self.colors = apply_appearance(QApplication.instance(), mode, self.custom_color)
+        self.settings.setValue("appearance/mode", mode)
+        self.settings.sync()
+        for name, button in (("open", self.open_button), ("recent", self.recent_button), ("print", self.print_button)):
+            button.setIcon(self._toolbar_icon(name))
+        close_icon = self._toolbar_icon("close")
+        for button in self.tab_bar.findChildren(QToolButton, "tabClose"):
+            button.setIcon(close_icon)
+        for name, button in self.caption_buttons.items():
+            icon = "restore" if name == "maximize" and self.isMaximized() else name
+            button.setIcon(self._toolbar_icon(icon, caption=True))
 
     def _toggle_maximized(self) -> None:
         if self.isMaximized():
@@ -525,14 +550,15 @@ class PdfReaderWindow(QMainWindow):
 
     def changeEvent(self, event) -> None:
         super().changeEvent(event)
-        if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "maximize_button"):
+        if event.type() == QEvent.Type.WindowStateChange and "maximize" in getattr(self, "caption_buttons", {}):
             if self.isMaximized():
-                icon, label = QStyle.StandardPixmap.SP_TitleBarNormalButton, "Khôi phục"
+                icon, label = "restore", "Khôi phục"
             else:
-                icon, label = QStyle.StandardPixmap.SP_TitleBarMaxButton, "Phóng to"
-            self.maximize_button.setIcon(self.style().standardIcon(icon))
-            self.maximize_button.setToolTip(label)
-            self.maximize_button.setAccessibleName(label)
+                icon, label = "maximize", "Phóng to"
+            button = self.caption_buttons["maximize"]
+            button.setIcon(self._toolbar_icon(icon, caption=True))
+            button.setToolTip(label)
+            button.setAccessibleName(label)
 
     def _load_recent_files(self) -> list[dict[str, str | float]]:
         saved = self.settings.value("recentFilesJson", "")
@@ -607,16 +633,16 @@ class PdfReaderWindow(QMainWindow):
             title_line.setContentsMargins(0, 0, 0, 0)
             name_label = QLabel(path.name)
             name_label.setTextFormat(Qt.TextFormat.PlainText)
-            name_label.setStyleSheet("color: #34445a; font-size: 12px; border: none;")
+            name_label.setObjectName("recentFilename")
             name_label.setToolTip(str(path))
             title_line.addWidget(name_label, 1)
             time_text = QLabel(time_label)
-            time_text.setStyleSheet("color: #8190a3; font-size: 10px; border: none;")
+            time_text.setObjectName("recentDetail")
             title_line.addWidget(time_text)
             details.addLayout(title_line)
             folder_label = QLabel(str(path.parent))
             folder_label.setTextFormat(Qt.TextFormat.PlainText)
-            folder_label.setStyleSheet("color: #8190a3; font-size: 10px; border: none;")
+            folder_label.setObjectName("recentDetail")
             folder_label.setToolTip(str(path.parent))
             details.addWidget(folder_label)
             row_layout.addLayout(details, 1)
@@ -675,7 +701,7 @@ class PdfReaderWindow(QMainWindow):
         self.empty_label = QLabel("Kéo thả tài liệu vào cửa sổ hoặc bấm Open để bắt đầu")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setMinimumSize(QSize(340, 260))
-        self.empty_label.setStyleSheet("background:#ffffff; color:#617188; font-size:18px; border:1px solid #d6dde7; border-radius:10px;")
+        self.empty_label.setObjectName("emptyState")
         self.pages_layout.addWidget(self.empty_label, alignment=Qt.AlignmentFlag.AlignCenter)
         self.statusBar().showMessage("Tệp được mở trực tiếp trên máy tính.")
         self.print_button.setEnabled(False)
@@ -1156,13 +1182,13 @@ class PdfReaderWindow(QMainWindow):
             painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "PDF")
         return QIcon(pixmap)
 
-    @staticmethod
-    def _toolbar_icon(kind):
+    def _toolbar_icon(self, kind, *, caption=False):
         pixmap = QPixmap(24, 24)
         pixmap.fill(Qt.GlobalColor.transparent)
         with QPainter(pixmap) as painter:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setPen(QPen(QColor("#25364e"), 1.7))
+            ink = self.colors["title_text" if caption else "text"]
+            painter.setPen(QPen(QColor(ink), 1.7))
             if kind == "brand":
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(QColor("#d9242d"))
@@ -1182,9 +1208,16 @@ class PdfReaderWindow(QMainWindow):
             elif kind == "close":
                 painter.drawLine(6, 6, 18, 18)
                 painter.drawLine(18, 6, 6, 18)
+            elif kind == "minimize":
+                painter.drawLine(4, 12, 20, 12)
+            elif kind == "maximize":
+                painter.drawRect(5, 5, 14, 14)
+            elif kind == "restore":
+                painter.drawRect(4, 8, 12, 12)
+                painter.drawPolyline([QPoint(8, 7), QPoint(8, 4), QPoint(20, 4), QPoint(20, 16), QPoint(17, 16)])
             else:
                 painter.drawRoundedRect(2, 8, 20, 10, 2, 2)
-                painter.fillRect(6, 13, 12, 9, QColor("#e9edf5"))
+                painter.fillRect(6, 13, 12, 9, QColor(self.colors["toolbar"]))
                 painter.drawRect(6, 13, 12, 9)
                 painter.drawRect(6, 2, 12, 6)
                 painter.drawLine(9, 17, 15, 17)
@@ -1309,6 +1342,7 @@ def main() -> int:
     except OSError:
         pass
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
     clean_old_downloads()

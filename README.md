@@ -12,6 +12,7 @@ Nếu tự dựng chương trình từ mã nguồn, `capnhat.bat` vẫn tạo `d
 
 ## Đọc và in
 
+- Bấm **Giao diện** ở góc trên bên phải để chọn **Sáng**, **Tối** hoặc **Màu tùy chọn…**. Màu đã chọn áp dụng ngay cho cửa sổ, thanh công cụ và hộp in. Ứng dụng ghi nhớ lựa chọn cho lần mở sau. Trang tài liệu và bản in dùng màu gốc của PDF.
 - PDF cuộn liên tục, tìm và sao chép chữ, `Ctrl` + lăn chuột để thu phóng. Menu **Vừa trang** cũng có **Vừa chiều rộng** và **100%**.
 - **Chữ ký số** báo kết quả kiểm tra ngoại tuyến độc lập với hình chữ ký hoặc con dấu trên trang.
 - **Print** mở bản xem trước, có phạm vi trang, lọc chẵn/lẻ, số bản, khổ giấy, hướng giấy, tỷ lệ và hai mặt theo driver. Có thể in hai mặt thủ công sau khi thử hướng nạp giấy.

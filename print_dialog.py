@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 from PySide6.QtCore import QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QImage, QPainter
+from PySide6.QtGui import QImage, QPainter
 from PySide6.QtPrintSupport import QPrinterInfo
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QDialog, QFormLayout, QHBoxLayout,
@@ -56,13 +56,13 @@ class PaperPreview(QWidget):
 
     def paintEvent(self, event):
         with QPainter(self) as painter:
-            painter.fillRect(self.rect(), QColor("#e8edf5"))
+            painter.fillRect(self.rect(), self.palette().window())
             paper_w, paper_h = self.paper_mm
             scale = min((self.width() - 32) / paper_w, (self.height() - 32) / paper_h)
             width, height = paper_w * scale, paper_h * scale
             x, y = (self.width() - width) / 2, (self.height() - height) / 2
             paper = QRectF(x, y, width, height)
-            painter.fillRect(paper.translated(2, 3), QColor("#cbd4e2"))
+            painter.fillRect(paper.translated(2, 3), self.palette().shadow())
             painter.fillRect(paper, Qt.GlobalColor.white)
             if self.image.isNull():
                 return
@@ -182,7 +182,7 @@ class PdfPrintDialog(QDialog):
         cancel.clicked.connect(self.reject)
         footer.addWidget(cancel)
         self.print_button = QPushButton("In")
-        self.print_button.setStyleSheet("background:#175bdf;color:white;padding:7px 22px;")
+        self.print_button.setObjectName("submitPrint")
         self.print_button.clicked.connect(self._submit_selection)
         footer.addWidget(self.print_button)
 
