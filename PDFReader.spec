@@ -2,7 +2,7 @@
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files
 
 datas = collect_data_files("pypdfium2")
-datas += [("app_icon.png", ".")]
+datas += [("app_icon.png", "."), ("version.ini", ".")]
 binaries = collect_dynamic_libs("pypdfium2")
 
 a = Analysis(

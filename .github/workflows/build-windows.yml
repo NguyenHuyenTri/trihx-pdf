@@ -13,6 +13,8 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -21,6 +23,14 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: python -m pip install -r requirements.txt pyinstaller
+      - name: Read application version
+        id: version
+        shell: bash
+        run: python -c "from app_update import APP_VERSION; print('version=' + APP_VERSION)" >> "$GITHUB_OUTPUT"
+      - name: Test updates on Windows
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -v
       - name: Build executable
         run: pyinstaller --clean --noconfirm PDFReader.spec
       - name: Upload executable
@@ -39,9 +49,72 @@ jobs:
           }
           & $path TRIHXOffice.iss
           if ($LASTEXITCODE -ne 0) { throw 'Cannot build installer' }
+      - name: Install and open the packaged reader
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP 'TRIHX PDF installation'
+          $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR="{0}"' -f $installDir))
+          $setup = Start-Process -FilePath '.\dist\TRIHX Office Setup.exe' -ArgumentList $arguments -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "Setup exited with $($setup.ExitCode)" }
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\TRIHX.Office.Windows_is1'
+          if ((Get-ItemProperty $key).DisplayVersion -ne $env:RELEASE_VERSION) { throw 'Installed version mismatch' }
+          $exe = Join-Path $installDir 'HX PDF.exe'
+          Start-Process -FilePath $exe
+          $deadline = (Get-Date).AddSeconds(90)
+          do {
+            Start-Sleep -Seconds 1
+            $window = Get-Process -Name 'HX PDF' -ErrorAction SilentlyContinue |
+              Where-Object { $_.Path -eq $exe -and $_.MainWindowTitle -eq 'TRIHX PDF' } | Select-Object -First 1
+          } until ($window -or (Get-Date) -gt $deadline)
+          if (-not $window) { throw 'The installed reader did not open its main window' }
+          $null = $window.CloseMainWindow()
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: TRIHX-Office-Setup-Windows-x64
           path: dist/TRIHX Office Setup.exe
           if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: trihx-release-${{ needs.build.outputs.version }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: TRIHX-Office-Setup-Windows-x64
+      - name: Publish the Windows installer for a new version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          asset=TRIHX-PDF-Setup-Windows-x64.exe
+          repo="$GITHUB_REPOSITORY"
+          if existing=$(gh release view "$tag" --repo "$repo" --json isDraft,targetCommitish,databaseId); then
+            if [[ $(jq -r .isDraft <<< "$existing") == false ]]; then
+              id=$(jq -r .databaseId <<< "$existing")
+              gh api "repos/$repo/releases/$id/assets" | jq -e --arg name "$asset" 'any(.[]; .name == $name and .state == "uploaded")'
+              exit 0
+            fi
+            [[ $(jq -r .targetCommitish <<< "$existing") == "$GITHUB_SHA" ]] || { echo "Draft belongs to another commit"; exit 1; }
+          else
+            gh release create "$tag" --repo "$repo" --target "$GITHUB_SHA" --draft \
+              --title "TRIHX PDF $VERSION" --notes "Bộ cài TRIHX PDF cho Windows 10/11 x64. Đóng ứng dụng đang mở rồi chạy tệp .exe để cài đặt hoặc nâng cấp."
+          fi
+          mv 'TRIHX Office Setup.exe' "$asset"
+          gh release upload "$tag" "$asset" --clobber --repo "$repo"
+          digest="sha256:$(sha256sum "$asset" | cut -d' ' -f1)"
+          id=$(gh release view "$tag" --repo "$repo" --json databaseId --jq .databaseId)
+          gh api "repos/$repo/releases/$id/assets" |
+            jq -e --arg name "$asset" --arg digest "$digest" 'any(.[]; .name == $name and .digest == $digest and .state == "uploaded")'
+          gh release edit "$tag" --repo "$repo" --draft=false

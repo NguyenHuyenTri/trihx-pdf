@@ -1,4 +1,7 @@
-#define AppVersion "0.2.0"
+#define AppVersion ReadIni(AddBackslash(SourcePath) + "version.ini", "app", "version")
+#if AppVersion == ""
+  #error Application version missing from version.ini
+#endif
 
 [Setup]
 AppId=TRIHX.Office.Windows

@@ -4,9 +4,11 @@
 
 ## Cài đặt
 
-Trong GitHub Actions, mở lần chạy thành công của **Build Windows EXE** và tải artifact **TRIHX-Office-Setup-Windows-x64**. Giải nén artifact để lấy `TRIHX Office Setup.exe`. Bộ cài tạo lối tắt Start và Desktop, có mục gỡ cài đặt và đăng ký **Open with** cho PDF. Windows tự quản lý lựa chọn ứng dụng mặc định.
+Tải [bộ cài TRIHX PDF cho Windows x64](https://github.com/NguyenHuyenTri/trihx-pdf/releases/latest/download/TRIHX-PDF-Setup-Windows-x64.exe) và chạy tệp vừa tải. Nếu đã cài phiên bản cũ, đóng ứng dụng rồi chạy bộ cài này để nâng cấp tại chỗ. Mở lại TRIHX PDF từ lối tắt trên Desktop hoặc Start.
 
-Nếu đang dùng bản mã nguồn, đóng ứng dụng và chạy lại `capnhat.bat` để tạo `dist\HX PDF.exe`. Máy người dùng cài từ Setup không cần Python hoặc Git.
+Từ phiên bản 0.3.0, bấm **Cập nhật** ở góc dưới bên phải cửa sổ, kể cả khi chưa mở PDF. Nếu có phiên bản mới, bấm **Tải bản mới**. Khi ứng dụng kiểm tra xong bộ cài, bấm **Cài đặt**. Các tab sẽ đóng và trình cài đặt Windows sẽ mở. Bạn có thể đóng hộp cập nhật để tiếp tục đọc.
+
+Nếu tự dựng chương trình từ mã nguồn, `capnhat.bat` vẫn tạo `dist\HX PDF.exe`. Để phát hành phiên bản mới, tăng số phiên bản trong `version.ini` theo dạng `X.Y.Z` rồi đưa thay đổi lên nhánh `main`. Workflow **Build Windows EXE** kiểm tra ứng dụng, dựng bộ cài Windows và đăng bộ cài lên GitHub Releases. Nút **Cập nhật** đọc bản phát hành chính thức mới nhất.
 
 ## Đọc và in
 

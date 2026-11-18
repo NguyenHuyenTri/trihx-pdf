@@ -10,6 +10,8 @@ import pypdfium2 as pdfium
 from PySide6.QtCore import Qt, QSize, QTimer, QSettings, QPoint, QEvent, QThread, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QIntValidator, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from print_dialog import PdfPrintDialog
+from app_update import APP_VERSION
+from update_dialog import UpdateDialog, clean_old_downloads
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -268,6 +270,7 @@ class PdfReaderWindow(QMainWindow):
         self.active_tab_key: str | None = None
         self._tab_change_blocked = False
         self.word_export = None
+        self.update_dialog = None
         self.settings = QSettings("TRIHX", "HX PDF")
         self.recent_files: list[dict[str, str | float]] = self._load_recent_files()
         self._build_ui()
@@ -467,6 +470,13 @@ class PdfReaderWindow(QMainWindow):
         self.recent_popup.resize(720, 600)
         self.setCentralWidget(self.scroll)
         self.setStatusBar(QStatusBar())
+        self.update_button = QToolButton()
+        self.update_button.setText("Cập nhật")
+        self.update_button.setToolTip(f"Kiểm tra phiên bản mới · TRIHX PDF {APP_VERSION}")
+        self.update_button.setStyleSheet("QToolButton { background: transparent; border: 0; padding: 1px 8px; }"
+                                        "QToolButton:hover { background: #e8edf4; }")
+        self.update_button.clicked.connect(self._check_updates)
+        self.statusBar().addPermanentWidget(self.update_button)
 
     def _build_document_title_bar(self) -> None:
         row = QWidget()
@@ -1130,6 +1140,7 @@ class PdfReaderWindow(QMainWindow):
             action.setVisible(self.document is not None)
         self.print_button.setEnabled(self.file_path is not None)
         self.export_button.setEnabled(self.document is not None and self.word_export is None)
+        self.update_button.setEnabled(self.word_export is None)
 
     @staticmethod
     def _file_icon():
@@ -1229,8 +1240,20 @@ class PdfReaderWindow(QMainWindow):
                                     document_path=self.file_path)
             dialog.exec()
 
+    def _check_updates(self) -> None:
+        if self.word_export is not None or self.update_dialog is not None:
+            return
+        self.update_dialog = UpdateDialog(self)
+        try:
+            install_started = self.update_dialog.exec() == QDialog.DialogCode.Accepted
+        finally:
+            self.update_dialog.deleteLater()
+            self.update_dialog = None
+        if install_started:
+            self.close()
+
     def closeEvent(self, event) -> None:
-        if self.word_export is not None:
+        if self.word_export is not None or self.update_dialog is not None:
             event.ignore()
             return
         self._clear_page_widgets()
@@ -1287,6 +1310,8 @@ def main() -> int:
         pass
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
+    clean_old_downloads()
     app.setWindowIcon(QIcon(str(resource_path("app_icon.png"))))
     window = PdfReaderWindow()
     window.show()
