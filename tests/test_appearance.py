@@ -4,12 +4,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PIL import Image, ImageDraw
-from PySide6.QtCore import QSettings
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtCore import QSettings, QSize
+from PySide6.QtGui import QColor, QIcon, QPalette
 from PySide6.QtWidgets import QApplication, QGroupBox, QToolButton
 
 from appearance import DEFAULT_CUSTOM_COLOR, read_appearance, theme_colors
 from app_update import APP_VERSION
+from brand_icon import application_icon, draw_mark
 from main import PdfReaderWindow
 from print_dialog import PaperPreview
 
@@ -105,15 +106,18 @@ class AppearanceTests(unittest.TestCase):
 
     def test_reader_and_tab_bar_share_the_application_mark(self):
         reader = self.reader
-        mark = self.app.windowIcon().pixmap(32, 32).toImage()
-        self.assertEqual(mark.pixelColor(5, 17).name(), "#d9242d")
-        self.assertEqual(mark.pixelColor(26, 17).name(), "#d9242d")
-        self.assertTrue(any(mark.pixelColor(x, 17).name() == "#ffffff" for x in range(10, 22)))
-        self.assertEqual(mark.pixelColor(0, 0).alpha(), 0)
-        self.assertEqual(mark, reader.windowIcon().pixmap(32, 32).toImage())
+        artwork = draw_mark(32)
+        self.assertEqual(artwork.pixelColor(5, 17).name(), "#d9242d")
+        self.assertEqual(artwork.pixelColor(26, 17).name(), "#d9242d")
+        self.assertTrue(any(artwork.pixelColor(x, 17).name() == "#ffffff" for x in range(10, 22)))
+        self.assertEqual(artwork.pixelColor(0, 0).alpha(), 0)
+        frame = (QSize(32, 32), QIcon.Mode.Normal, QIcon.State.Off)
+        mark = application_icon().pixmap(*frame).toImage()
+        self.assertEqual(mark, self.app.windowIcon().pixmap(*frame).toImage())
+        self.assertEqual(mark, reader.windowIcon().pixmap(*frame).toImage())
         reader.settings_button.click()
         reader.settings_dialog.theme_buttons["dark"].click()
-        self.assertEqual(mark, reader.app_home_button.icon().pixmap(32, 32).toImage())
+        self.assertEqual(mark, reader.app_home_button.icon().pixmap(*frame).toImage())
 
     def test_contrast_and_damaged_preferences(self):
         for background, ink in (("#ffffff", "#000000"), ("#ffed00", "#000000"),
