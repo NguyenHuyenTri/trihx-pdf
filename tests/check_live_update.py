@@ -60,10 +60,20 @@ def wait_until(check, description):
     raise AssertionError(description)
 
 
-def pdf_opened(path):
+def wait_for_pdf(path):
     settings = QSettings("TRIHX", "HX PDF")
-    settings.sync()
-    return any(Path(item["path"]) == path for item in json.loads(settings.value("recentFilesJson", "[]")))
+    expected = path.resolve()
+    recent = []
+
+    def opened():
+        settings.sync()
+        recent[:] = [item["path"] for item in json.loads(settings.value("recentFilesJson", "[]"))]
+        return any(Path(item).resolve() == expected for item in recent)
+
+    try:
+        wait_until(opened, "The requested PDF did not open")
+    except AssertionError as exc:
+        raise AssertionError(f"Expected {str(expected)!a}, recent paths {recent!a}") from exc
 
 
 def check_update(root, payload, next_version):
@@ -91,7 +101,7 @@ def check_update(root, payload, next_version):
         try:
             subprocess.run([root / READER_NAME, before], check=True, timeout=20)
             original = wait_until(lambda: reader_window(old_exe), "Original reader did not start")
-            wait_until(lambda: pdf_opened(before), "The original document did not open")
+            wait_for_pdf(before)
             dialog = SettingsDialog("light", DEFAULT_CUSTOM_COLOR)
             with patch("settings_dialog.update_directory", return_value=versions), \
                     patch("app_update.open_url", side_effect=release_response):
@@ -104,7 +114,7 @@ def check_update(root, payload, next_version):
             shell.ShellExecuteEx(fMask=shellcon.SEE_MASK_CLASSNAME, lpClass="HXPDF.Document",
                                  lpVerb="open", lpFile=str(after), nShow=1)
             wait_until(lambda: reader_window(new_exe), "Opening the next PDF did not use the staged version")
-            wait_until(lambda: pdf_opened(after), "Updated reader did not open its PDF")
+            wait_for_pdf(after)
             assert win32gui.IsWindowVisible(original)
             key_name = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\TRIHX.Office.Windows_is1"
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_name) as key:

@@ -3,22 +3,28 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Windows.Forms;
 
 internal static class ReaderLauncher
 {
-    // Leave the original quoting of PDF paths and the caller's working directory intact.
-    private static string DocumentArguments()
+    // ProcessStartInfo on .NET Framework accepts a single Windows command line.
+    private static string QuoteArgument(string argument)
     {
-        string line = Environment.CommandLine.TrimStart();
-        bool inQuotes = false;
-        for (int i = 0; i < line.Length; i++)
+        var quoted = new StringBuilder("\"");
+        int backslashes = 0;
+        foreach (char ch in argument)
         {
-            if (line[i] == '"') inQuotes = !inQuotes;
-            else if (!inQuotes && (line[i] == ' ' || line[i] == '\t'))
-                return line.Substring(i + 1);
+            if (ch == '\\')
+            {
+                backslashes++;
+                continue;
+            }
+            quoted.Append('\\', ch == '"' ? 2 * backslashes + 1 : backslashes);
+            quoted.Append(ch);
+            backslashes = 0;
         }
-        return String.Empty;
+        return quoted.Append('\\', 2 * backslashes).Append('"').ToString();
     }
 
     private static Version ReadVersion(string folder)
@@ -30,7 +36,7 @@ internal static class ReaderLauncher
     }
 
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
         string root = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "trihx-versions");
         string error = "Chưa tìm thấy bản TRIHX PDF đã cài.";
@@ -44,7 +50,7 @@ internal static class ReaderLauncher
             {
                 try
                 {
-                    var info = new ProcessStartInfo(reader.File, DocumentArguments());
+                    var info = new ProcessStartInfo(reader.File, String.Join(" ", args.Select(QuoteArgument)));
                     info.UseShellExecute = false;
                     Process.Start(info);
                     return 0;
