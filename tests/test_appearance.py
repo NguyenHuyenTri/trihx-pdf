@@ -106,8 +106,9 @@ class AppearanceTests(unittest.TestCase):
     def test_reader_and_tab_bar_share_the_application_mark(self):
         reader = self.reader
         mark = self.app.windowIcon().pixmap(32, 32).toImage()
-        self.assertGreater(mark.pixelColor(5, 8).red(), 180)
-        self.assertLess(mark.pixelColor(5, 8).green(), 80)
+        self.assertEqual(mark.pixelColor(5, 17).name(), "#d9242d")
+        self.assertEqual(mark.pixelColor(26, 17).name(), "#d9242d")
+        self.assertTrue(any(mark.pixelColor(x, 17).name() == "#ffffff" for x in range(10, 22)))
         self.assertEqual(mark.pixelColor(0, 0).alpha(), 0)
         self.assertEqual(mark, reader.windowIcon().pixmap(32, 32).toImage())
         reader.settings_button.click()
