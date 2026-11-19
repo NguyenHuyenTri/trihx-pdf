@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QIcon, QImage, QPainter, QPixmap
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
 
 
 def draw_mark(size):
@@ -12,17 +12,13 @@ def draw_mark(size):
     image.fill(Qt.GlobalColor.transparent)
     with QPainter(image) as painter:
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
         painter.scale(size / 24, size / 24)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#d9242d"))
         painter.drawRoundedRect(QRectF(1, 1, 22, 22), 4, 4)
-        painter.setPen(Qt.GlobalColor.white)
-        font = QFont("Segoe UI")
-        font.setPixelSize(19)
-        font.setWeight(QFont.Weight.Bold)
-        painter.setFont(font)
-        painter.drawText(QRectF(0, 0, 24, 24), Qt.AlignmentFlag.AlignCenter, "T")
+        # Define both strokes on the same grid so the mark also renders without system fonts.
+        painter.fillRect(QRectF(6.3, 5.5, 11.4, 2.6), Qt.GlobalColor.white)
+        painter.fillRect(QRectF(10.5, 7.5, 3, 11), Qt.GlobalColor.white)
     return image
 
 
