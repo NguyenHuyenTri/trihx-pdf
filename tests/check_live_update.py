@@ -27,7 +27,7 @@ sys.path.insert(0, sys.argv[4] if len(sys.argv) > 4 else str(project))
 from app_update import APP_VERSION, ASSET_NAME, LATEST_URL, READER_NAME, VERSIONS_DIR, Release
 from appearance import DEFAULT_CUSTOM_COLOR
 from settings_dialog import SettingsDialog
-from windows_icon import file_mark, mark_pixels, matches_mark
+from windows_icon import executable_mark, file_mark, mark_pixels, matches_mark
 
 
 def reader_window(expected):
@@ -137,10 +137,25 @@ def check_update(root, payload, next_version):
             if check_legacy_logo:
                 stable = root / READER_NAME
                 assert stable.read_bytes() == updated_launcher, "The registered installation still contains the old launcher binary"
+                assert matches_mark(executable_mark(stable), reference), "The launcher has a different embedded icon"
                 window_icon = win32gui.SendMessage(updated, win32con.WM_GETICON, win32con.ICON_BIG, 0)
                 assert matches_mark(mark_pixels(window_icon), reference), "The open reader has a different icon"
-                for item in (root / READER_NAME, *links):
-                    wait_until(lambda: matches_mark(file_mark(item), reference), f"Stale shell icon on {item}")
+                import pythoncom
+
+                for shortcut in links:
+                    link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink)
+                    link.QueryInterface(pythoncom.IID_IPersistFile).Load(str(shortcut))
+                    assert Path(link.GetPath(0)[0]) == stable, f"Shortcut target changed on {shortcut}"
+                    icon, index = link.GetIconLocation()
+                    assert (Path(icon), index) == (new_exe, 0), f"Unexpected shortcut icon {icon!r}, {index} on {shortcut}"
+
+                # Query the existing shortcuts as a new Shell client after the notification.
+                # The process that sampled the old executable retains a private icon list.
+                def updated_shortcuts():
+                    output = subprocess.check_output([sys.executable, project / "tests" / "windows_icon.py", *links], text=True)
+                    return all(matches_mark(mark, reference) for mark in json.loads(output))
+
+                wait_until(updated_shortcuts, "Windows still shows a different icon for the existing Desktop or Start link")
                 print("Verified the new mark on the existing Desktop and Start links, launcher, setup and reader window.")
             key_name = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\TRIHX.Office.Windows_is1"
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_name) as key:

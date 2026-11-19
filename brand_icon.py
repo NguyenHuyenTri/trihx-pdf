@@ -43,7 +43,7 @@ def export_windows_icon(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     sizes = (16, 20, 22, 24, 32, 40, 48, 64, 96, 128, 256)
     with Image.open(BytesIO(bytes(buffer.data()))) as master:
-        master.convert("RGBA").save(path, format="ICO", sizes=[(n, n) for n in sizes])
+        master.convert("RGBA").save(path, format="ICO", bitmap_format="bmp", sizes=[(n, n) for n in sizes])
 
 
 if __name__ == "__main__":

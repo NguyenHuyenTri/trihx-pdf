@@ -45,3 +45,19 @@ def file_mark(path):
 
 def matches_mark(actual, reference):
     return sum(a == b for a, b in zip(actual, reference)) >= 0.90 * len(reference)
+
+
+def executable_mark(path):
+    large, small = win32gui.ExtractIconEx(str(path), 0)
+    try:
+        return mark_pixels(large[0])
+    finally:
+        for icon in (*large, *small):
+            win32gui.DestroyIcon(icon)
+
+
+if __name__ == "__main__":
+    import json
+    import sys
+
+    print(json.dumps([file_mark(path) for path in sys.argv[1:]]))
