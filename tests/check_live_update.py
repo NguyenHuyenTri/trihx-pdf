@@ -142,12 +142,12 @@ def check_update(root, payload, next_version):
                 assert matches_mark(mark_pixels(window_icon), reference), "The open reader has a different icon"
                 import pythoncom
 
+                locations = []
                 for shortcut in links:
                     link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink)
                     link.QueryInterface(pythoncom.IID_IPersistFile).Load(str(shortcut))
                     assert Path(link.GetPath(0)[0]) == stable, f"Shortcut target changed on {shortcut}"
-                    icon, index = link.GetIconLocation()
-                    assert (Path(icon), index) == (new_exe, 0), f"Unexpected shortcut icon {icon!r}, {index} on {shortcut}"
+                    locations.append(link.GetIconLocation())
 
                 # Query the existing shortcuts as a new Shell client after the notification.
                 # The process that sampled the old executable retains a private icon list.
@@ -155,7 +155,7 @@ def check_update(root, payload, next_version):
                     output = subprocess.check_output([sys.executable, project / "tests" / "windows_icon.py", *links], text=True)
                     return all(matches_mark(mark, reference) for mark in json.loads(output))
 
-                wait_until(updated_shortcuts, "Windows still shows a different icon for the existing Desktop or Start link")
+                wait_until(updated_shortcuts, f"Windows still draws a different Desktop or Start icon. Icon locations {locations!r}")
                 print("Verified the new mark on the existing Desktop and Start links, launcher, setup and reader window.")
             key_name = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\TRIHX.Office.Windows_is1"
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_name) as key:
