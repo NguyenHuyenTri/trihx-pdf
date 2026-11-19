@@ -6,9 +6,23 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files
 
+root = Path(SPECPATH)
+brand = root / "build" / "branding" / "app_icon.ico"
+subprocess.run([sys.executable, str(root / "brand_icon.py"), str(brand)],
+               env=dict(os.environ, QT_QPA_PLATFORM="offscreen"), check=True)
 datas = collect_data_files("pypdfium2")
-datas += [("app_icon.png", "."), ("version.ini", ".")]
+datas += [(str(brand), "."), ("version.ini", ".")]
 binaries = collect_dynamic_libs("pypdfium2")
+
+# Background updates ship the stable shortcut target as well as the reader.
+if sys.platform == "win32":
+    launcher = root / "build" / "launcher" / "HX PDF.exe"
+    launcher.parent.mkdir(parents=True, exist_ok=True)
+    compiler = Path(os.environ["WINDIR"]) / "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe"
+    subprocess.run([str(compiler), "/nologo", "/target:winexe", "/codepage:65001",
+                    "/reference:System.Windows.Forms.dll", "/win32icon:" + str(brand),
+                    "/out:" + str(launcher), str(root / "reader_launcher.cs")], check=True)
+    datas.append((str(launcher), "launcher"))
 
 a = Analysis(
     ["main.py"],
@@ -31,7 +45,7 @@ exe = EXE(
     a.datas,
     [],
     name="HX PDF",
-    icon="app_icon.ico",
+    icon=str(brand),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -44,13 +58,3 @@ exe = EXE(
     entitlements_file=None,
 )
 
-# The installed shortcut stays at the same path while reader versions coexist.
-# The regular dist/HX PDF.exe remains usable on its own as a portable reader.
-if sys.platform == "win32":
-    root = Path(SPECPATH)
-    launcher = root / "build" / "launcher" / "HX PDF.exe"
-    launcher.parent.mkdir(parents=True, exist_ok=True)
-    compiler = Path(os.environ["WINDIR"]) / "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe"
-    subprocess.run([str(compiler), "/nologo", "/target:winexe", "/codepage:65001",
-                    "/reference:System.Windows.Forms.dll", "/win32icon:" + str(root / "app_icon.ico"),
-                    "/out:" + str(launcher), str(root / "reader_launcher.cs")], check=True)

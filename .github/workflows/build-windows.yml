@@ -104,6 +104,33 @@ jobs:
           $installed = Join-Path $env:RUNNER_TEMP 'TRIHX PDF installation'
           python tests/check_live_update.py $installed (Join-Path $payloadDir 'HX PDF.exe') $next
           if ($LASTEXITCODE -ne 0) { throw 'Background upgrade failed' }
+      - name: Check out the original 0.3.4 background updater
+        uses: actions/checkout@v4
+        with:
+          repository: NguyenHuyenTri/trihx-pdf
+          ref: f1ea3fcaf27735ace16db324c044b697b0e75559
+          path: build/legacy-0.3.4
+          persist-credentials: false
+      - name: Check the logo on existing 0.3.4 shortcuts after a background update
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $clean = Join-Path $env:RUNNER_TEMP 'TRIHX PDF installation\unins000.exe'
+          $removed = Start-Process $clean -ArgumentList '/VERYSILENT','/NORESTART' -PassThru -Wait
+          if ($removed.ExitCode -ne 0) { throw 'Could not clear the earlier test installation' }
+          $setup = Join-Path $env:RUNNER_TEMP 'trihx-0.3.4-setup.exe'
+          $url = 'https://github.com/NguyenHuyenTri/trihx-pdf/releases/download/v0.3.4/TRIHX-PDF-Setup-Windows-x64.exe'
+          Invoke-WebRequest -Uri $url -OutFile $setup
+          if ((Get-FileHash $setup).Hash -ne '9fdfff7ab4fc715f8db6e776f9e515fc774970d236ce1394b7c65951e4acb4f3') {
+            throw 'The 0.3.4 setup does not match the published release'
+          }
+          $legacy = Join-Path $env:RUNNER_TEMP 'TRIHX previous installation'
+          $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/TASKS=desktopicon', ('/DIR="{0}"' -f $legacy))
+          $installed = Start-Process $setup -ArgumentList $arguments -Wait -PassThru
+          if ($installed.ExitCode -ne 0) { throw 'Could not install the original release' }
+          python tests/check_live_update.py $legacy (Resolve-Path 'dist/HX PDF.exe').Path $env:RELEASE_VERSION (Resolve-Path 'build/legacy-0.3.4').Path
+          if ($LASTEXITCODE -ne 0) { throw 'The installed shortcuts did not adopt the updated icon' }
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:

@@ -21,10 +21,13 @@ from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 from win32com.shell import shell, shellcon
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# A supplied checkout runs the updater exactly as shipped in the older release.
+project = Path(__file__).resolve().parents[1]
+sys.path.insert(0, sys.argv[4] if len(sys.argv) > 4 else str(project))
 from app_update import APP_VERSION, ASSET_NAME, LATEST_URL, READER_NAME, VERSIONS_DIR, Release
 from appearance import DEFAULT_CUSTOM_COLOR
 from settings_dialog import SettingsDialog
+from windows_icon import file_mark, mark_pixels, matches_mark
 
 
 def reader_window(expected):
@@ -84,6 +87,16 @@ def check_update(root, payload, next_version):
     with payload.open("rb") as data:
         digest = hashlib.file_digest(data, "sha256").hexdigest()
     release = Release(next_version, payload.stat().st_size, digest)
+    desktop = Path(shell.SHGetFolderPath(0, shellcon.CSIDL_DESKTOPDIRECTORY, 0, 0)) / "TRIHX PDF.lnk"
+    programs = Path(shell.SHGetFolderPath(0, shellcon.CSIDL_PROGRAMS, 0, 0))
+    links = (desktop, programs / "TRIHX PDF" / "TRIHX PDF.lnk")
+    check_legacy_logo = len(sys.argv) > 4
+    if check_legacy_logo:
+        reference = file_mark(payload)
+        assert "w" in reference and reference.count("r") > len(reference) // 2
+        assert matches_mark(file_mark(project / "dist" / "TRIHX Office Setup.exe"), reference)
+        for item in (root / READER_NAME, *links):
+            assert not matches_mark(file_mark(item), reference), f"Expected the old icon on {item}"
     metadata = dict(tag_name="v" + next_version, draft=False, prerelease=False,
                     assets=[dict(name=ASSET_NAME, state="uploaded", size=release.size, digest="sha256:" + digest)])
 
@@ -113,9 +126,15 @@ def check_update(root, payload, next_version):
             assert reader_window(old_exe) == original
             shell.ShellExecuteEx(fMask=shellcon.SEE_MASK_CLASSNAME, lpClass="HXPDF.Document",
                                  lpVerb="open", lpFile=str(after), nShow=1)
-            wait_until(lambda: reader_window(new_exe), "Opening the next PDF did not use the staged version")
+            updated = wait_until(lambda: reader_window(new_exe), "Opening the next PDF did not use the staged version")
             wait_for_pdf(after)
             assert win32gui.IsWindowVisible(original)
+            if check_legacy_logo:
+                window_icon = win32gui.SendMessage(updated, win32con.WM_GETICON, win32con.ICON_BIG, 0)
+                assert matches_mark(mark_pixels(window_icon), reference), "The open reader has a different icon"
+                for item in (root / READER_NAME, *links):
+                    wait_until(lambda: matches_mark(file_mark(item), reference), f"Stale shell icon on {item}")
+                print("Verified the new mark on the existing Desktop and Start links, launcher, setup and reader window.")
             key_name = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\TRIHX.Office.Windows_is1"
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_name) as key:
                 assert winreg.QueryValueEx(key, "DisplayVersion")[0] == next_version

@@ -123,6 +123,39 @@ def installed_versions(directory: Path):
     return sorted(readers, reverse=True)
 
 
+def refresh_installed_launcher(reader: Path, root: Path, bundled: Path) -> bool:
+    """Refresh only the registered installation's launcher, keeping all shortcut targets valid."""
+    from PySide6.QtCore import QLockFile
+
+    versions = root / VERSIONS_DIR
+    launcher = root / READER_NAME
+    if reader != versions / APP_VERSION / READER_NAME or not launcher.is_file():
+        return False
+    lock = QLockFile(str(root / ".trihx-launcher.lock"))
+    if not lock.tryLock(1000):
+        return False
+    temporary = None
+    try:
+        newest = installed_versions(versions)
+        if not newest or newest[0][1] != reader:
+            return False
+        contents = bundled.read_bytes()
+        if launcher.stat().st_size == len(contents) and launcher.read_bytes() == contents:
+            return False
+        with tempfile.NamedTemporaryFile(dir=root, prefix="trihx-launcher-", suffix=".tmp",
+                                         delete=False) as output:
+            temporary = Path(output.name)
+            output.write(contents)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, launcher)
+        return True
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        lock.unlock()
+
+
 def matches_release(path: Path, release: Release) -> bool:
     try:
         if path.stat().st_size != release.size:

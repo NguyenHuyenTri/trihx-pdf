@@ -13,9 +13,10 @@ from appearance import apply_appearance, read_appearance
 from print_dialog import PdfPrintDialog
 from app_update import (
     APP_VERSION, READER_NAME, VERSIONS_DIR, clean_old_versions, forward_portable_launch,
-    version_key, versions_directory,
+    refresh_installed_launcher, version_key, versions_directory,
 )
 from settings_dialog import SettingsDialog, clean_legacy_downloads
+from brand_icon import application_icon
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -259,7 +260,9 @@ class PdfReaderWindow(QMainWindow):
         if self._combined_title_bar:
             self.setWindowFlag(Qt.WindowType.FramelessWindowHint)
         self.setWindowTitle(APP_NAME)
-        self.setWindowIcon(self._toolbar_icon("brand"))
+        icon = application_icon()
+        QApplication.instance().setWindowIcon(icon)
+        self.setWindowIcon(icon)
         work_area = self.screen().availableSize()
         self.setMinimumSize(QSize(760, 560).boundedTo(work_area))
         self.resize(QSize(1180, 820).boundedTo(work_area * 0.9))
@@ -399,7 +402,7 @@ class PdfReaderWindow(QMainWindow):
         self.app_home_button = QToolButton()
         self.app_home_button.setText(APP_NAME)
         self.app_home_button.setObjectName("officeBrand")
-        self.app_home_button.setIcon(self._toolbar_icon("brand"))
+        self.app_home_button.setIcon(self.windowIcon())
         self.app_home_button.setIconSize(QSize(22, 22))
         self.app_home_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.app_home_button.setToolTip("Tệp gần đây")
@@ -1170,14 +1173,7 @@ class PdfReaderWindow(QMainWindow):
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             ink = self.colors["title_text" if caption else "text"]
             painter.setPen(QPen(QColor(ink), 1.7))
-            if kind == "brand":
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor("#d9242d"))
-                painter.drawRoundedRect(1, 1, 22, 22, 4, 4)
-                painter.setPen(Qt.GlobalColor.white)
-                painter.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-                painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "T")
-            elif kind == "open":
+            if kind == "open":
                 painter.drawRoundedRect(2, 7, 20, 13, 2, 2)
                 painter.drawLine(3, 7, 3, 4)
                 painter.drawLine(3, 4, 10, 4)
@@ -1297,7 +1293,8 @@ def register_pdf_open_with() -> None:
         return
     import winreg
 
-    executable = Path(sys.executable).resolve()
+    reader = Path(sys.executable).resolve()
+    executable = reader
     root = executable.parent
     if root.parent.name == VERSIONS_DIR:
         root = root.parent.parent
@@ -1329,18 +1326,31 @@ def register_pdf_open_with() -> None:
         winreg.SetValueEx(key, prog_id, 0, winreg.REG_SZ, "")
 
     uninstall = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\TRIHX.Office.Windows_is1"
+    launcher_changed = False
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, uninstall, 0, winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
             location = Path(winreg.QueryValueEx(key, "InstallLocation")[0])
             version = winreg.QueryValueEx(key, "DisplayVersion")[0]
-            if location == root and version_key(version) < version_key(APP_VERSION):
-                winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, APP_VERSION)
+            if location == root and version_key(version) <= version_key(APP_VERSION):
+                if version != APP_VERSION:
+                    winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, APP_VERSION)
+                launcher_changed = refresh_installed_launcher(reader, root, resource_path("launcher") / READER_NAME)
     except (OSError, ValueError):
         pass
 
     try:
         import ctypes
-        ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
+
+        notify = ctypes.windll.shell32.SHChangeNotify
+        notify(0x08000000, 0, None, None)  # SHCNE_ASSOCCHANGED
+        if launcher_changed:
+            from win32com.shell import shell, shellcon
+
+            desktop = Path(shell.SHGetFolderPath(0, shellcon.CSIDL_DESKTOPDIRECTORY, 0, 0))
+            programs = Path(shell.SHGetFolderPath(0, shellcon.CSIDL_PROGRAMS, 0, 0))
+            for path in (executable, desktop / "TRIHX PDF.lnk", programs / "TRIHX PDF" / "TRIHX PDF.lnk"):
+                if path.is_file():
+                    notify(0x2000, 0x0005, ctypes.c_wchar_p(str(path)), None)  # UPDATEITEM, PATHW
     except Exception:
         pass
 
@@ -1364,7 +1374,6 @@ def main() -> int:
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
     clean_legacy_downloads()
-    app.setWindowIcon(QIcon(str(resource_path("app_icon.png"))))
     window = PdfReaderWindow()
     window.showMaximized()
     candidates = [

@@ -103,6 +103,17 @@ class AppearanceTests(unittest.TestCase):
         self.assertEqual(viewed.pixelColor(1, 1).name(), self.reader.colors["canvas"])
         self.assertEqual(viewed.pixelColor(viewed.width() // 2, viewed.height() // 2).name(), "#ffffff")
 
+    def test_reader_and_tab_bar_share_the_application_mark(self):
+        reader = self.reader
+        mark = self.app.windowIcon().pixmap(32, 32).toImage()
+        self.assertGreater(mark.pixelColor(5, 8).red(), 180)
+        self.assertLess(mark.pixelColor(5, 8).green(), 80)
+        self.assertEqual(mark.pixelColor(0, 0).alpha(), 0)
+        self.assertEqual(mark, reader.windowIcon().pixmap(32, 32).toImage())
+        reader.settings_button.click()
+        reader.settings_dialog.theme_buttons["dark"].click()
+        self.assertEqual(mark, reader.app_home_button.icon().pixmap(32, 32).toImage())
+
     def test_contrast_and_damaged_preferences(self):
         for background, ink in (("#ffffff", "#000000"), ("#ffed00", "#000000"),
                                 ("#000000", "#ffffff"), ("#160d67", "#ffffff")):
