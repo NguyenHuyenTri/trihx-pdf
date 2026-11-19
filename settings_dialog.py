@@ -1,6 +1,6 @@
-import time
 from http.client import HTTPException
 from pathlib import Path
+from time import time
 from urllib.error import HTTPError, URLError
 
 from PySide6.QtCore import QStandardPaths, Qt, QThread, Signal
@@ -10,67 +10,61 @@ from PySide6.QtWidgets import (
     QProgressBar, QPushButton, QRadioButton, QVBoxLayout,
 )
 
-from app_update import APP_VERSION, check_for_update, download_installer, launch_installer
+from app_update import APP_VERSION, check_for_update, stage_update, update_directory
 from appearance import MODES
+
+
+def clean_legacy_downloads():
+    directory = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)) / "updates"
+    cutoff = time() - 86400
+    for path in directory.glob("trihx-setup-*"):
+        try:
+            if path.suffix in (".part", ".exe") and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 class UpdateJob(QThread):
     progress = Signal(int)
+    downloading = Signal(str)
 
-    def __init__(self, release, directory, parent):
+    def __init__(self, parent):
         super().__init__(parent)
-        self.release = release
-        self.directory = directory
         self.result = None
         self.error = None
 
     def run(self):
         try:
-            if self.release is None:
-                self.result = check_for_update()
-            else:
-                self.result = download_installer(self.release, self.directory, self.progress.emit,
-                                                 self.isInterruptionRequested)
+            directory = update_directory()
+            release = check_for_update()
+            if release is not None and not self.isInterruptionRequested():
+                self.downloading.emit(release.version)
+                stage_update(release, directory, self.progress.emit, self.isInterruptionRequested)
+                self.result = release.version
         except HTTPError as exc:
             self.error = f"GitHub trả về lỗi HTTP {exc.code}. Hãy thử lại sau."
             exc.close()
         except (URLError, HTTPException, TimeoutError):
             self.error = "Kết nối đến GitHub bị gián đoạn. Hãy kiểm tra mạng rồi thử lại."
+        except PermissionError:
+            self.error = "Windows chưa cho ghi vào thư mục TRIHX PDF. Kiểm tra quyền ghi rồi thử lại."
         except Exception as exc:
             self.error = str(exc)
 
 
-def cache_directory():
-    return Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)) / "updates"
-
-
-def clean_old_downloads():
-    directory = cache_directory()
-    cutoff = time.time() - 24 * 60 * 60
-    try:
-        for path in directory.glob("trihx-setup-*"):
-            if path.suffix in (".part", ".exe") and path.stat().st_mtime < cutoff:
-                path.unlink(missing_ok=True)
-    except OSError:
-        pass
-
-
 class SettingsDialog(QDialog):
     appearance_changed = Signal(str, str)
+    update_finished = Signal(str)
 
     def __init__(self, mode, custom_color, parent=None):
         super().__init__(parent)
         self.setObjectName("readerSettings")
         self.setWindowTitle("Cài đặt TRIHX PDF")
-        self.setWindowModality(Qt.WindowModality.WindowModal)
         self.setMinimumWidth(440)
         self.theme_mode = mode
         self.custom_color = custom_color
-        self.release = None
-        self.installer = None
-        self.install_started = False
         self.job = None
-        self.cancelling = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 14, 18, 14)
         layout.setSpacing(14)
@@ -99,7 +93,7 @@ class SettingsDialog(QDialog):
         self.version_label = QLabel(f"Phiên bản đang dùng   {APP_VERSION}")
         version_row.addWidget(self.version_label)
         version_row.addStretch()
-        self.action = QPushButton("Kiểm tra cập nhật")
+        self.action = QPushButton("Cập nhật ngay")
         self.action.setAutoDefault(False)
         self.action.clicked.connect(self._next)
         version_row.addWidget(self.action)
@@ -133,68 +127,38 @@ class SettingsDialog(QDialog):
     def _next(self):
         if self.job is not None:
             return
-        if self.installer is not None:
-            try:
-                launch_installer(self.installer)
-            except OSError as exc:
-                self.status.setText(f"Windows chưa mở được bộ cài. {exc}")
-                return
-            self.installer = None
-            self.install_started = True
-            self.accept()
-            return
-        checking = self.release is None
-        self.status.setText("Đang kiểm tra phiên bản…" if checking else
-                            f"Đang tải TRIHX PDF {self.release.version}…")
+        self.status.setText("Đang kiểm tra phiên bản…")
         self.status.show()
-        self.bar.setRange(0, 0 if checking else 100)
+        self.bar.setRange(0, 0)
         self.bar.setValue(0)
         self.bar.show()
         self.action.hide()
-        self.dismiss.setText("Hủy và đóng")
-        self.job = UpdateJob(self.release, cache_directory(), self)
+        self.dismiss.setText("Tiếp tục đọc")
+        self.job = UpdateJob(self)
+        self.job.downloading.connect(self._downloading)
         self.job.progress.connect(self.bar.setValue)
         self.job.finished.connect(self._finished)
         self.job.start()
+
+    def _downloading(self, version):
+        self.status.setText(f"Đang tải TRIHX PDF {version}. Bạn có thể tiếp tục đọc PDF.")
+        self.bar.setRange(0, 100)
 
     def _finished(self):
         job = self.job
         self.job = None
         result, error = job.result, job.error
         job.deleteLater()
-        if isinstance(result, Path):
-            self.installer = result
-        if self.cancelling:
-            self.reject()
-            return
         self.bar.hide()
         self.dismiss.setText("Đóng")
         if error:
             self.status.setText(error)
             self.action.setText("Thử lại")
-        elif self.installer:
-            self.status.setText("Đã tải và kiểm tra bộ cài. Bấm Cài bản mới để đóng các tab PDF và mở bộ cài Windows.")
-            self.action.setText("Cài bản mới")
-        elif result is None:
-            self.status.setText("Bạn đang dùng phiên bản mới nhất hiện có.")
+        elif result:
+            self.status.setText(f"Bản {result} đã sẵn sàng. Lần mở TRIHX PDF tiếp theo sẽ dùng bản mới.")
             self.action.setText("Kiểm tra lại")
         else:
-            self.release = result
-            size_mb = self.release.size / (1024 * 1024)
-            self.status.setText(f"Có phiên bản {self.release.version} cho Windows ({size_mb:.1f} MB).")
-            self.action.setText("Tải bản mới")
+            self.status.setText("Bạn đang dùng phiên bản mới nhất hiện có.")
+            self.action.setText("Kiểm tra lại")
         self.action.show()
-
-    def reject(self):
-        if self.job is not None:
-            self.cancelling = True
-            self.job.requestInterruption()
-            self.dismiss.setEnabled(False)
-            self.status.setText("Đang hủy…")
-            return
-        if self.installer is not None:
-            try:
-                self.installer.unlink(missing_ok=True)
-            except OSError:
-                pass
-        super().reject()
+        self.update_finished.emit(self.status.text())

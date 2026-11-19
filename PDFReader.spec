@@ -1,4 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files
 
 datas = collect_data_files("pypdfium2")
@@ -38,3 +43,14 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+
+# The installed shortcut stays at the same path while reader versions coexist.
+# The regular dist/HX PDF.exe remains usable on its own as a portable reader.
+if sys.platform == "win32":
+    root = Path(SPECPATH)
+    launcher = root / "build" / "launcher" / "HX PDF.exe"
+    launcher.parent.mkdir(parents=True, exist_ok=True)
+    compiler = Path(os.environ["WINDIR"]) / "Microsoft.NET" / "Framework64" / "v4.0.30319" / "csc.exe"
+    subprocess.run([str(compiler), "/nologo", "/target:winexe", "/codepage:65001",
+                    "/reference:System.Windows.Forms.dll", "/win32icon:" + str(root / "app_icon.ico"),
+                    "/out:" + str(launcher), str(root / "reader_launcher.cs")], check=True)

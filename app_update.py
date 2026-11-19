@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from configparser import ConfigParser
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +30,9 @@ APP_VERSION = config["app"]["version"]
 version_key(APP_VERSION)
 REPOSITORY = "NguyenHuyenTri/trihx-pdf"
 LATEST_URL = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
-ASSET_NAME = "TRIHX-PDF-Setup-Windows-x64.exe"
+ASSET_NAME = "TRIHX-PDF-Reader-Windows-x64.exe"
+VERSIONS_DIR = "trihx-versions"
+READER_NAME = "HX PDF.exe"
 
 
 @dataclass(frozen=True)
@@ -59,7 +62,7 @@ def available_update(data: dict, current: str = APP_VERSION) -> Release | None:
         digest = re.fullmatch(r"sha256:([0-9a-f]{64})", asset.get("digest") or "")
         if type(size) is int and size > 0 and digest:
             return Release(version, size, digest[1])
-    raise ValueError("Bản phát hành chưa có bộ cài Windows x64 kèm mã kiểm tra. Hãy thử lại sau.")
+    raise ValueError("Bản phát hành chưa có gói cập nhật Windows x64 kèm mã kiểm tra. Hãy thử lại sau.")
 
 
 class GitHubRedirect(HTTPRedirectHandler):
@@ -92,15 +95,61 @@ def check_for_update() -> Release | None:
         raise
 
 
-def download_installer(release: Release, directory: Path, progress, cancelled) -> Path:
-    directory.mkdir(parents=True, exist_ok=True)
+def versions_directory(executable: Path) -> Path:
+    if executable.parent.parent.name == VERSIONS_DIR:
+        return executable.parent.parent
+    # A standalone reader might be in Downloads or a shared folder. Only use
+    # updates in this user's data directory, scoped to that portable executable.
+    identity = hashlib.sha256(os.fsencode(os.path.normcase(str(executable)))).hexdigest()
+    local = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+    return local / "TRIHX" / "Portable" / identity / VERSIONS_DIR
+
+
+def update_directory() -> Path:
+    if not getattr(sys, "frozen", False) or sys.platform != "win32":
+        raise ValueError("Bạn đang chạy từ mã nguồn. Hãy dùng capnhat.bat để cập nhật bản tự dựng.")
+    return versions_directory(Path(sys.executable).resolve())
+
+
+def installed_versions(directory: Path):
+    readers = []
+    for reader in directory.glob("*/" + READER_NAME):
+        try:
+            version = version_key(reader.parent.name)
+        except ValueError:
+            continue
+        if reader.is_file():
+            readers.append((version, reader))
+    return sorted(readers, reverse=True)
+
+
+def matches_release(path: Path, release: Release) -> bool:
+    try:
+        if path.stat().st_size != release.size:
+            return False
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest() == release.sha256
+    except FileNotFoundError:
+        return False
+
+
+def stage_update(release: Release, directory: Path, progress, cancelled) -> Path:
+    version_key(release.version)
+    folder = directory / release.version
+    target = folder / READER_NAME
+    folder.mkdir(parents=True, exist_ok=True)
+    if matches_release(target, release):
+        return target
     partial = None
     received = 0
     previous_percent = -1
     digest = hashlib.sha256()
     try:
         with open_url(release.url, "application/octet-stream") as response:
-            with tempfile.NamedTemporaryFile(dir=directory, prefix="trihx-setup-", suffix=".part",
+            with tempfile.NamedTemporaryFile(dir=folder, prefix="reader-", suffix=".part",
                                              delete=False) as output:
                 partial = Path(output.name)
                 while not cancelled():
@@ -109,32 +158,38 @@ def download_installer(release: Release, directory: Path, progress, cancelled) -
                         break
                     received += len(chunk)
                     if received > release.size:
-                        raise ValueError("Dung lượng bộ cài tải về khác bản phát hành.")
+                        raise ValueError("Dung lượng gói cập nhật tải về khác bản phát hành.")
                     output.write(chunk)
                     digest.update(chunk)
                     percent = received * 100 // release.size
                     if percent != previous_percent:
                         progress(percent)
                         previous_percent = percent
+                output.flush()
+                os.fsync(output.fileno())
         if cancelled():
             raise InterruptedError("Đã hủy tải bản cập nhật.")
         if received != release.size or digest.hexdigest() != release.sha256:
-            raise ValueError("Bộ cài tải về thiếu dữ liệu hoặc sai mã kiểm tra. Hãy tải lại.")
-        return partial.rename(partial.with_suffix(".exe"))
+            raise ValueError("Gói cập nhật tải về thiếu dữ liệu hoặc sai mã kiểm tra. Hãy thử lại.")
+        try:
+            os.replace(partial, target)
+        except PermissionError:
+            # Another reader can finish the same update and open it first.
+            if not matches_release(target, release):
+                raise
+        return target
     finally:
         if partial is not None:
             partial.unlink(missing_ok=True)
 
 
-def launch_installer(path: Path):
-    if sys.platform != "win32":
-        raise OSError("Bộ cài này dùng cho Windows 10/11 x64.")
+def start_reader(path: Path, arguments: list[str]):
     env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
     bundle = getattr(sys, "_MEIPASS", None)
     if bundle:
         import ctypes
 
-        # The setup wizard and the reader it starts must outlive this one-file bundle.
+        # A portable reader can start a newer independent PyInstaller process.
         set_dll_directory = ctypes.windll.kernel32.SetDllDirectoryW
         if not set_dll_directory(None):
             raise ctypes.WinError()
@@ -142,7 +197,39 @@ def launch_installer(path: Path):
         env["PATH"] = os.pathsep.join(entry for entry in env.get("PATH", "").split(os.pathsep)
                                      if not Path(entry).is_relative_to(root))
     try:
-        subprocess.Popen([str(path)], cwd=path.parent, env=env)
+        subprocess.Popen([str(path), *arguments], env=env)
     finally:
         if bundle:
             set_dll_directory(bundle)
+
+
+def forward_portable_launch(executable: Path, arguments: list[str]) -> bool:
+    if executable.parent.parent.name == VERSIONS_DIR:
+        return False
+    for version, reader in installed_versions(versions_directory(executable)):
+        if version <= version_key(APP_VERSION):
+            break
+        try:
+            start_reader(reader, arguments)
+        except OSError:
+            continue
+        return True
+    return False
+
+
+def clean_old_versions(directory: Path):
+    # Keep the previous working version. An older, open reader can finish on its own.
+    older = [reader for version, reader in installed_versions(directory) if version < version_key(APP_VERSION)]
+    for reader in older[1:]:
+        try:
+            reader.unlink()
+            reader.parent.rmdir()
+        except OSError:
+            pass
+    cutoff = time.time() - 86400
+    for partial in directory.glob("*/reader-*.part"):
+        try:
+            if partial.stat().st_mtime < cutoff:
+                partial.unlink()
+        except OSError:
+            pass

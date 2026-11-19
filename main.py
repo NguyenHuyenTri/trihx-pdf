@@ -11,8 +11,11 @@ from PySide6.QtCore import Qt, QSize, QTimer, QSettings, QPoint, QEvent, QThread
 from PySide6.QtGui import QAction, QColor, QFont, QIcon, QImage, QIntValidator, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from appearance import apply_appearance, read_appearance
 from print_dialog import PdfPrintDialog
-from app_update import APP_VERSION
-from settings_dialog import SettingsDialog, clean_old_downloads
+from app_update import (
+    APP_VERSION, READER_NAME, VERSIONS_DIR, clean_old_versions, forward_portable_launch,
+    version_key, versions_directory,
+)
+from settings_dialog import SettingsDialog, clean_legacy_downloads
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -1257,25 +1260,27 @@ class PdfReaderWindow(QMainWindow):
             dialog.exec()
 
     def _open_settings(self) -> None:
-        if self.word_export is not None or self.settings_dialog is not None:
+        if self.word_export is not None:
             return
-        dialog = SettingsDialog(self.theme_mode, self.custom_color, self)
-        self.settings_dialog = dialog
-        dialog.appearance_changed.connect(self._set_appearance)
-        dialog.finished.connect(self._settings_closed)
-        dialog.open()
-
-    def _settings_closed(self, _result) -> None:
-        dialog = self.settings_dialog
-        self.settings_dialog = None
-        dialog.deleteLater()
-        if dialog.install_started:
-            self.close()
+        if self.settings_dialog is None:
+            self.settings_dialog = SettingsDialog(self.theme_mode, self.custom_color, self)
+            self.settings_dialog.appearance_changed.connect(self._set_appearance)
+            self.settings_dialog.update_finished.connect(lambda message: self.statusBar().showMessage(message, 15000))
+        self.settings_dialog.show()
+        self.settings_dialog.raise_()
+        self.settings_dialog.activateWindow()
 
     def closeEvent(self, event) -> None:
-        if self.word_export is not None or self.settings_dialog is not None:
+        if self.word_export is not None:
             event.ignore()
             return
+        if self.settings_dialog is not None:
+            self.settings_dialog.hide()
+            if self.settings_dialog.job is not None:
+                # Closing the last window leaves a requested download time to finish.
+                app = QApplication.instance()
+                app.setQuitOnLastWindowClosed(False)
+                self.settings_dialog.update_finished.connect(app.quit)
         self._clear_page_widgets()
         for state in self.open_tabs.values():
             try:
@@ -1292,7 +1297,15 @@ def register_pdf_open_with() -> None:
         return
     import winreg
 
-    exe_path = str(Path(sys.executable).resolve())
+    executable = Path(sys.executable).resolve()
+    root = executable.parent
+    if root.parent.name == VERSIONS_DIR:
+        root = root.parent.parent
+        executable = root / READER_NAME
+        if not executable.is_file():
+            # The portable entry point has already registered its stable path.
+            return
+    exe_path = str(executable)
     exe_name = Path(exe_path).name
     classes = r"Software\Classes"
     app_key = classes + rf"\Applications\{exe_name}"
@@ -1315,6 +1328,16 @@ def register_pdf_open_with() -> None:
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, classes + r"\.pdf\OpenWithProgids") as key:
         winreg.SetValueEx(key, prog_id, 0, winreg.REG_SZ, "")
 
+    uninstall = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\TRIHX.Office.Windows_is1"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, uninstall, 0, winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
+            location = Path(winreg.QueryValueEx(key, "InstallLocation")[0])
+            version = winreg.QueryValueEx(key, "DisplayVersion")[0]
+            if location == root and version_key(version) < version_key(APP_VERSION):
+                winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, APP_VERSION)
+    except (OSError, ValueError):
+        pass
+
     try:
         import ctypes
         ctypes.windll.shell32.SHChangeNotify(0x08000000, 0x0000, None, None)
@@ -1328,11 +1351,19 @@ def main() -> int:
         register_pdf_open_with()
     except OSError:
         pass
+    if sys.platform == "win32" and getattr(sys, "frozen", False):
+        try:
+            executable = Path(sys.executable).resolve()
+            if forward_portable_launch(executable, input_files):
+                return 0
+            clean_old_versions(versions_directory(executable))
+        except OSError:
+            pass
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
-    clean_old_downloads()
+    clean_legacy_downloads()
     app.setWindowIcon(QIcon(str(resource_path("app_icon.png"))))
     window = PdfReaderWindow()
     window.showMaximized()

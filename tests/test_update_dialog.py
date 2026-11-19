@@ -3,18 +3,17 @@ import io
 import tempfile
 import time
 import unittest
-from contextlib import ExitStack
 from pathlib import Path
 from threading import Event
 from unittest.mock import patch
 from urllib.error import URLError
 
+from PIL import Image
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication
 
-from app_update import Release
-from appearance import DEFAULT_CUSTOM_COLOR
-from settings_dialog import SettingsDialog
+from app_update import READER_NAME, Release, stage_update
+from main import PdfReaderWindow
 
 
 class UpdateDialogTests(unittest.TestCase):
@@ -23,23 +22,20 @@ class UpdateDialogTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        stack = self.enterContext(ExitStack())
-        directory = Path(stack.enter_context(tempfile.TemporaryDirectory()))
-        stack.enter_context(patch("settings_dialog.cache_directory", return_value=directory))
-        self.check = stack.enter_context(patch("settings_dialog.check_for_update"))
-        self.launch = stack.enter_context(patch("settings_dialog.launch_installer"))
-        self.data = b"installer fixture"
-        stack.enter_context(patch("app_update.open_url", side_effect=lambda *args: io.BytesIO(self.data)))
+        self.directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.enterContext(patch("settings_dialog.update_directory", return_value=self.directory))
+        self.check = self.enterContext(patch("settings_dialog.check_for_update"))
+        self.data = b"reader fixture"
+        self.enterContext(patch("app_update.open_url", side_effect=lambda *args: io.BytesIO(self.data)))
         self.release = Release("1.0.0", len(self.data), hashlib.sha256(self.data).hexdigest())
-
-    def open_dialog(self):
-        self.dialog = SettingsDialog("light", DEFAULT_CUSTOM_COLOR)
-        self.dialog.open()
-        self.addCleanup(self.dialog.close)
+        self.reader = PdfReaderWindow()
+        self.addCleanup(self.reader.close)
+        self.reader.show()
+        self.reader.settings_button.click()
+        self.dialog = self.reader.settings_dialog
+        self.assertFalse(self.dialog.isModal())
+        self.assertEqual(self.dialog.action.text(), "Cập nhật ngay")
         self.check.assert_not_called()
-        self.assertEqual(self.dialog.action.text(), "Kiểm tra cập nhật")
-        self.dialog.action.click()
-        self.wait_for_job()
 
     def wait_for_job(self):
         deadline = time.monotonic() + 10
@@ -49,61 +45,56 @@ class UpdateDialogTests(unittest.TestCase):
 
     def test_current_and_offline_retry(self):
         self.check.side_effect = [URLError("offline"), None]
-        self.open_dialog()
+        self.dialog.action.click()
+        self.wait_for_job()
         self.assertEqual(self.dialog.action.text(), "Thử lại")
         self.dialog.action.click()
         self.wait_for_job()
-        self.assertEqual(self.dialog.action.text(), "Kiểm tra lại")
         self.assertIn("mới nhất", self.dialog.status.text())
-        self.launch.assert_not_called()
 
-    def test_download_verify_then_explicit_install(self):
+    def test_keep_reading_and_reopen_settings_during_update(self):
         self.check.return_value = self.release
-        self.open_dialog()
-        self.assertEqual(self.dialog.action.text(), "Tải bản mới")
-        self.dialog.action.click()
-        self.wait_for_job()
-        installer = self.dialog.installer
-        self.assertEqual(installer.read_bytes(), self.data)
-        self.assertEqual(self.dialog.action.text(), "Cài bản mới")
-        self.launch.assert_not_called()
-        self.launch.side_effect = [OSError("busy"), None]
-        self.dialog.action.click()
-        self.assertTrue(self.dialog.isVisible())
-        self.assertFalse(self.dialog.install_started)
-        self.dialog.action.click()
-        self.launch.assert_called_with(installer)
-        self.assertTrue(self.dialog.install_started)
-        self.assertEqual(self.dialog.result(), QDialog.DialogCode.Accepted)
+        path = self.directory / "Báo cáo.pdf"
+        Image.new("RGB", (120, 150), "white").save(path)
+        self.reader.open_file(path)
+        page = self.reader.page_labels[0]
+        started, resume = Event(), Event()
 
-    def test_can_dismiss_downloaded_update_and_keep_reading(self):
-        self.check.return_value = self.release
-        self.open_dialog()
-        self.dialog.action.click()
-        self.wait_for_job()
-        installer = self.dialog.installer
-        self.dialog.dismiss.click()
-        self.assertFalse(installer.exists())
-        self.launch.assert_not_called()
+        def paused_download(*args):
+            started.set()
+            if not resume.wait(10):
+                raise RuntimeError("Test timed out waiting for the reader")
+            return stage_update(*args)
 
-    def test_close_while_downloading_waits_for_the_job(self):
-        self.check.return_value = self.release
-        self.open_dialog()
-        resume = Event()
-
-        def paused_download(release, directory, progress, cancelled):
-            resume.wait(5)
-            if cancelled():
-                raise InterruptedError("Đã hủy tải.")
-            raise AssertionError("Download continued after the settings window was closed")
-
-        with patch("settings_dialog.download_installer", side_effect=paused_download):
+        with patch("settings_dialog.stage_update", side_effect=paused_download):
             self.dialog.action.click()
-            self.assertIsNotNone(self.dialog.job)
-            self.dialog.close()
-            self.assertTrue(self.dialog.cancelling)
-            resume.set()
+            try:
+                self.assertTrue(started.wait(5))
+                self.dialog.dismiss.click()
+                self.assertFalse(self.dialog.isVisible())
+                self.assertIs(self.reader.page_labels[0], page)
+                self.assertTrue(self.reader.file_path.samefile(path))
+                self.reader.settings_button.click()
+                self.assertIs(self.reader.settings_dialog, self.dialog)
+                self.assertIsNotNone(self.dialog.job)
+                self.dialog.reject()
+            finally:
+                resume.set()
+                self.wait_for_job()
+        self.assertTrue(self.reader.isVisible())
+        self.assertIs(self.reader.page_labels[0], page)
+        self.assertEqual((self.directory / "1.0.0" / READER_NAME).read_bytes(), self.data)
+        self.reader.settings_button.click()
+        self.assertIn("1.0.0 đã sẵn sàng", self.dialog.status.text())
+        self.check.assert_called_once()
+
+    def test_damaged_payload_can_be_retried(self):
+        self.check.return_value = self.release
+        with patch("app_update.open_url", return_value=io.BytesIO(b"broken")):
+            self.dialog.action.click()
             self.wait_for_job()
-        self.assertFalse(self.dialog.isVisible())
-        self.assertFalse(self.dialog.install_started)
-        self.launch.assert_not_called()
+        self.assertEqual(self.dialog.action.text(), "Thử lại")
+        self.assertFalse((self.directory / "1.0.0" / READER_NAME).exists())
+        self.dialog.action.click()
+        self.wait_for_job()
+        self.assertTrue((self.directory / "1.0.0" / READER_NAME).is_file())

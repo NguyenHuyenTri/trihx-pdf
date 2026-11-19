@@ -8,7 +8,9 @@ Tải [bộ cài TRIHX PDF cho Windows x64](https://github.com/NguyenHuyenTri/tr
 
 Trên bản 0.3.0 hoặc 0.3.1, bấm **Cập nhật** ở góc dưới bên phải để lên bản mới. Từ bản 0.3.2, bấm **Cài đặt** ở góc trên bên phải, cạnh nút thu nhỏ cửa sổ. Hộp thoại này mở được cả khi chưa mở PDF.
 
-Trong mục **Cập nhật**, bạn có thể xem phiên bản đang dùng và bấm **Kiểm tra cập nhật**. Khi có phiên bản mới, bấm **Tải bản mới**. Bấm **Cài bản mới** khi bạn sẵn sàng đóng các tab và mở bộ cài Windows.
+Từ bản 0.3.4, chọn **Cài đặt → Cập nhật ngay**. Bạn có thể đóng cửa sổ Cài đặt và tiếp tục đọc, chuyển tab hoặc in PDF trong lúc ứng dụng tải bản mới. Khi ứng dụng báo bản mới đã sẵn sàng, lần mở TRIHX PDF tiếp theo từ lối tắt hoặc từ tệp PDF sẽ dùng phiên bản mới. Các cửa sổ đang mở tiếp tục chạy phiên bản hiện tại cho đến khi bạn đóng chúng.
+
+Nếu đang dùng 0.3.2 hoặc 0.3.3, chọn **Cài đặt → Kiểm tra cập nhật → Tải bản mới → Cài bản mới** và xác nhận bộ cài một lần để chuyển sang cách cập nhật mới.
 
 Nếu tự dựng chương trình từ mã nguồn, `capnhat.bat` vẫn tạo `dist\HX PDF.exe`. Để phát hành phiên bản mới, tăng số phiên bản trong `version.ini` theo dạng `X.Y.Z` rồi đưa thay đổi lên nhánh `main`. Workflow **Build Windows EXE** kiểm tra ứng dụng, dựng bộ cài Windows và đăng bộ cài lên GitHub Releases. Ứng dụng kiểm tra phiên bản mới tại trang phát hành này.
 

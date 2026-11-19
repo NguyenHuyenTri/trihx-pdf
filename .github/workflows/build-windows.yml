@@ -60,7 +60,7 @@ jobs:
           if ($setup.ExitCode -ne 0) { throw "Setup exited with $($setup.ExitCode)" }
           $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\TRIHX.Office.Windows_is1'
           if ((Get-ItemProperty $key).DisplayVersion -ne $env:RELEASE_VERSION) { throw 'Installed version mismatch' }
-          $exe = Join-Path $installDir 'HX PDF.exe'
+          $exe = Join-Path $installDir "trihx-versions\$env:RELEASE_VERSION\HX PDF.exe"
           $shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'TRIHX PDF\TRIHX PDF.lnk'
           $sample = Join-Path $env:RUNNER_TEMP 'Window startup test.pdf'
           python -c "import sys; from PIL import Image; Image.new('RGB', (120, 160), 'white').save(sys.argv[1])" $sample
@@ -87,6 +87,23 @@ jobs:
               if (-not $window.WaitForExit(15000)) { throw 'The reader did not close' }
             }
           }
+      - name: Verify a background upgrade across two packaged reader versions
+        shell: pwsh
+        run: |
+          $next = python -c "from app_update import APP_VERSION,version_key; a,b,c = version_key(APP_VERSION); print(f'{a}.{b}.{c+1}')"
+          $payloadDir = Join-Path $env:RUNNER_TEMP 'next-reader'
+          $versionFile = (Resolve-Path 'version.ini').Path
+          $original = [IO.File]::ReadAllBytes($versionFile)
+          try {
+            [IO.File]::WriteAllLines($versionFile, @('[app]', "version=$next"), [Text.Encoding]::ASCII)
+            pyinstaller --noconfirm --distpath $payloadDir PDFReader.spec
+            if ($LASTEXITCODE -ne 0) { throw 'Could not build the next-version test reader' }
+          } finally {
+            [IO.File]::WriteAllBytes($versionFile, $original)
+          }
+          $installed = Join-Path $env:RUNNER_TEMP 'TRIHX PDF installation'
+          python tests/check_live_update.py $installed (Join-Path $payloadDir 'HX PDF.exe') $next
+          if ($LASTEXITCODE -ne 0) { throw 'Background upgrade failed' }
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
@@ -107,7 +124,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: TRIHX-Office-Setup-Windows-x64
-      - name: Publish the Windows installer for a new version
+      - uses: actions/download-artifact@v4
+        with:
+          name: HX-PDF-Windows-x64
+          path: reader
+      - name: Publish the Windows installer and background update together
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -115,23 +136,28 @@ jobs:
         run: |
           set -euo pipefail
           tag="v$VERSION"
-          asset=TRIHX-PDF-Setup-Windows-x64.exe
+          setup=TRIHX-PDF-Setup-Windows-x64.exe
+          reader=TRIHX-PDF-Reader-Windows-x64.exe
           repo="$GITHUB_REPOSITORY"
           if existing=$(gh release view "$tag" --repo "$repo" --json isDraft,targetCommitish,databaseId); then
             if [[ $(jq -r .isDraft <<< "$existing") == false ]]; then
               id=$(jq -r .databaseId <<< "$existing")
-              gh api "repos/$repo/releases/$id/assets" | jq -e --arg name "$asset" 'any(.[]; .name == $name and .state == "uploaded")'
+              gh api "repos/$repo/releases/$id/assets" | jq -e --arg setup "$setup" --arg reader "$reader" \
+                '[.[] | select(.state == "uploaded") | .name] | contains([$setup, $reader])'
               exit 0
             fi
             [[ $(jq -r .targetCommitish <<< "$existing") == "$GITHUB_SHA" ]] || { echo "Draft belongs to another commit"; exit 1; }
           else
             gh release create "$tag" --repo "$repo" --target "$GITHUB_SHA" --draft \
-              --title "TRIHX PDF $VERSION" --notes "Bộ cài TRIHX PDF cho Windows 10/11 x64. Đóng ứng dụng đang mở rồi chạy tệp .exe để cài đặt hoặc nâng cấp."
+              --title "TRIHX PDF $VERSION" --notes "Cài lần đầu bằng tệp Setup. Từ bản 0.3.4, chọn Cài đặt → Cập nhật ngay để tiếp tục dùng PDF trong lúc tải bản mới."
           fi
-          mv 'TRIHX Office Setup.exe' "$asset"
-          gh release upload "$tag" "$asset" --clobber --repo "$repo"
-          digest="sha256:$(sha256sum "$asset" | cut -d' ' -f1)"
+          mv 'TRIHX Office Setup.exe' "$setup"
+          mv 'reader/HX PDF.exe' "$reader"
+          gh release upload "$tag" "$setup" "$reader" --clobber --repo "$repo"
           id=$(gh release view "$tag" --repo "$repo" --json databaseId --jq .databaseId)
-          gh api "repos/$repo/releases/$id/assets" |
-            jq -e --arg name "$asset" --arg digest "$digest" 'any(.[]; .name == $name and .digest == $digest and .state == "uploaded")'
+          assets=$(gh api "repos/$repo/releases/$id/assets")
+          for file in "$setup" "$reader"; do
+            digest="sha256:$(sha256sum "$file" | cut -d' ' -f1)"
+            jq -e --arg name "$file" --arg digest "$digest" 'any(.[]; .name == $name and .digest == $digest and .state == "uploaded")' <<< "$assets"
+          done
           gh release edit "$tag" --repo "$repo" --draft=false

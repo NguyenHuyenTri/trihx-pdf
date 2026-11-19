@@ -24,7 +24,11 @@ ChangesAssociations=yes
 Name: "desktopicon"; Description: "Create a desktop shortcut"
 
 [Files]
-Source: "dist\HX PDF.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "build\launcher\HX PDF.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\HX PDF.exe"; DestDir: "{app}\trihx-versions\{#AppVersion}"; Flags: ignoreversion
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{app}\trihx-versions"
 
 [Icons]
 Name: "{group}\TRIHX PDF"; Filename: "{app}\HX PDF.exe"
