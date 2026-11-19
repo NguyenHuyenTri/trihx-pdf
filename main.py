@@ -13,7 +13,7 @@ from appearance import apply_appearance, read_appearance
 from print_dialog import PdfPrintDialog
 from app_update import (
     APP_VERSION, READER_NAME, VERSIONS_DIR, clean_old_versions, forward_portable_launch,
-    refresh_installed_launcher, version_key, versions_directory,
+    refresh_installed_launcher, refresh_windows_icons, version_key, versions_directory,
 )
 from settings_dialog import SettingsDialog, clean_legacy_downloads
 from brand_icon import application_icon
@@ -1326,12 +1326,14 @@ def register_pdf_open_with() -> None:
         winreg.SetValueEx(key, prog_id, 0, winreg.REG_SZ, "")
 
     uninstall = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\TRIHX.Office.Windows_is1"
+    registered_reader = False
     launcher_changed = False
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, uninstall, 0, winreg.KEY_READ | winreg.KEY_SET_VALUE) as key:
             location = Path(winreg.QueryValueEx(key, "InstallLocation")[0])
             version = winreg.QueryValueEx(key, "DisplayVersion")[0]
             if location == root and version_key(version) <= version_key(APP_VERSION):
+                registered_reader = reader == root / VERSIONS_DIR / APP_VERSION / READER_NAME
                 if version != APP_VERSION:
                     winreg.SetValueEx(key, "DisplayVersion", 0, winreg.REG_SZ, APP_VERSION)
                 launcher_changed = refresh_installed_launcher(reader, root, resource_path("launcher") / READER_NAME)
@@ -1341,16 +1343,10 @@ def register_pdf_open_with() -> None:
     try:
         import ctypes
 
+        if registered_reader:
+            refresh_windows_icons(executable, reader, launcher_changed)
         notify = ctypes.windll.shell32.SHChangeNotify
         notify(0x08000000, 0, None, None)  # SHCNE_ASSOCCHANGED
-        if launcher_changed:
-            from win32com.shell import shell, shellcon
-
-            desktop = Path(shell.SHGetFolderPath(0, shellcon.CSIDL_DESKTOPDIRECTORY, 0, 0))
-            programs = Path(shell.SHGetFolderPath(0, shellcon.CSIDL_PROGRAMS, 0, 0))
-            for path in (executable, desktop / "TRIHX PDF.lnk", programs / "TRIHX PDF" / "TRIHX PDF.lnk"):
-                if path.is_file():
-                    notify(0x2000, 0x0005, ctypes.c_wchar_p(str(path)), None)  # UPDATEITEM, PATHW
     except Exception:
         pass
 

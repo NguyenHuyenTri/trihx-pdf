@@ -156,6 +156,45 @@ def refresh_installed_launcher(reader: Path, root: Path, bundled: Path) -> bool:
         lock.unlock()
 
 
+def refresh_windows_icons(launcher: Path, reader: Path, launcher_changed: bool):
+    """Point the existing application links at the active icon while keeping their launch target."""
+    import ctypes
+    import pythoncom
+    from win32com import storagecon
+    from win32com.shell import shell, shellcon
+
+    notify = ctypes.windll.shell32.SHChangeNotify
+    if launcher_changed:
+        _, image = shell.SHGetFileInfo(str(launcher), 0, shellcon.SHGFI_SYSICONINDEX)
+        ctypes.windll.shell32.SHUpdateImageW(ctypes.c_wchar_p(str(launcher)), 0, 0, image[1])
+        notify(shellcon.SHCNE_UPDATEITEM, shellcon.SHCNF_PATHW | shellcon.SHCNF_FLUSH,
+               ctypes.c_wchar_p(str(launcher)), None)
+
+    desktop = Path(shell.SHGetFolderPath(0, shellcon.CSIDL_DESKTOPDIRECTORY, 0, 0))
+    programs = Path(shell.SHGetFolderPath(0, shellcon.CSIDL_PROGRAMS, 0, 0))
+    for path in (desktop / "TRIHX PDF.lnk", programs / "TRIHX PDF" / "TRIHX PDF.lnk"):
+        if not path.is_file():
+            continue
+        try:
+            link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER, shell.IID_IShellLink)
+            file = link.QueryInterface(pythoncom.IID_IPersistFile)
+            file.Load(str(path), storagecon.STGM_READWRITE)
+            if Path(link.GetPath(0)[0]) != launcher:
+                continue
+            icon, index = link.GetIconLocation()
+            previous = Path(os.path.expandvars(icon))
+            if previous == reader or index != 0:
+                continue
+            if icon and previous != launcher and not (previous.name == READER_NAME and previous.parent.parent == reader.parent.parent):
+                continue  # Preserve a custom shortcut icon selected by the user.
+            link.SetIconLocation(str(reader), 0)
+            file.Save(str(path), True)
+            notify(shellcon.SHCNE_UPDATEITEM, shellcon.SHCNF_PATHW | shellcon.SHCNF_FLUSH,
+                   ctypes.c_wchar_p(str(path)), None)
+        except (OSError, pythoncom.com_error):
+            continue  # A locked or redirected link can be refreshed on a later launch.
+
+
 def matches_release(path: Path, release: Release) -> bool:
     try:
         if path.stat().st_size != release.size:

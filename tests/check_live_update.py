@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 import winreg
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 
 import pywintypes
@@ -92,6 +92,11 @@ def check_update(root, payload, next_version):
     links = (desktop, programs / "TRIHX PDF" / "TRIHX PDF.lnk")
     check_legacy_logo = len(sys.argv) > 4
     if check_legacy_logo:
+        from PyInstaller.archive.readers import CArchiveReader
+
+        archive = CArchiveReader(str(payload))
+        launcher_entry = next(name for name in archive.toc if PureWindowsPath(name) == PureWindowsPath("launcher", READER_NAME))
+        updated_launcher = archive.extract(launcher_entry)
         reference = file_mark(payload)
         assert "w" in reference and reference.count("r") > len(reference) // 2
         assert matches_mark(file_mark(project / "dist" / "TRIHX Office Setup.exe"), reference)
@@ -130,6 +135,8 @@ def check_update(root, payload, next_version):
             wait_for_pdf(after)
             assert win32gui.IsWindowVisible(original)
             if check_legacy_logo:
+                stable = root / READER_NAME
+                assert stable.read_bytes() == updated_launcher, "The registered installation still contains the old launcher binary"
                 window_icon = win32gui.SendMessage(updated, win32con.WM_GETICON, win32con.ICON_BIG, 0)
                 assert matches_mark(mark_pixels(window_icon), reference), "The open reader has a different icon"
                 for item in (root / READER_NAME, *links):
